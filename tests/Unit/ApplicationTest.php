@@ -2,46 +2,26 @@
 
 namespace Tests\Unit;
 
+use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 class ApplicationTest extends TestCase
 {
-    public function setUp(): void
-    {
-        parent::setUp();
-
-        @unlink(public_path('hot'));
-    }
-
-    public function testStaticUrlsWithoutCdnAreConstructedCorrectly(): void
+    #[Test]
+    public function staticUrlsWithoutCdnAreConstructedCorrectly(): void
     {
         config(['koel.cdn.url' => '']);
 
-        self::assertEquals('http://localhost/', static_url());
-        self::assertEquals('http://localhost/foo.css', static_url('/foo.css '));
+        self::assertSame('http://localhost/', static_url());
+        self::assertSame('http://localhost/foo.css', static_url('/foo.css '));
     }
 
-    public function testStaticUrlsWithCdnAreConstructedCorrectly(): void
+    #[Test]
+    public function staticUrlsWithCdnAreConstructedCorrectly(): void
     {
         config(['koel.cdn.url' => 'http://cdn.tld']);
 
-        self::assertEquals('http://cdn.tld/', static_url());
-        self::assertEquals('http://cdn.tld/foo.css', static_url('/foo.css '));
-    }
-
-    public function testApplicationAssetRevisionUrlsAreConstructedCorrectlyWhenNotUsingCdn(): void
-    {
-        $manifestFile = __DIR__ . '../../blobs/rev-manifest.json';
-        config(['koel.cdn.url' => '']);
-
-        self::assertEquals('http://localhost/foo00.css', asset_rev('/foo.css', $manifestFile));
-    }
-
-    public function testApplicationAssetRevisionUrlsAreConstructedCorrectlyWhenUsingCdn(): void
-    {
-        $manifestFile = __DIR__ . '../../blobs/rev-manifest.json';
-        config(['koel.cdn.url' => 'http://cdn.tld']);
-
-        self::assertEquals('http://cdn.tld/foo00.css', asset_rev('/foo.css', $manifestFile));
+        self::assertSame('http://cdn.tld/', static_url());
+        self::assertSame('http://cdn.tld/foo.css', static_url('/foo.css '));
     }
 }

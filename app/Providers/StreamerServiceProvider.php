@@ -2,34 +2,22 @@
 
 namespace App\Providers;
 
-use App\Services\Streamers\DirectStreamerInterface;
-use App\Services\Streamers\ObjectStorageStreamerInterface;
-use App\Services\Streamers\PhpStreamer;
-use App\Services\Streamers\S3Streamer;
-use App\Services\Streamers\TranscodingStreamer;
-use App\Services\Streamers\TranscodingStreamerInterface;
-use App\Services\Streamers\XAccelRedirectStreamer;
-use App\Services\Streamers\XSendFileStreamer;
+use App\Services\Streamer\Adapters\LocalStreamerAdapter;
+use App\Services\Streamer\Adapters\PhpStreamerAdapter;
+use App\Services\Streamer\Adapters\XAccelRedirectStreamerAdapter;
+use App\Services\Streamer\Adapters\XSendFileStreamerAdapter;
 use Illuminate\Support\ServiceProvider;
 
 class StreamerServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        $this->app->bind(DirectStreamerInterface::class, static function (): DirectStreamerInterface {
-            switch (config('koel.streaming.method')) {
-                case 'x-sendfile':
-                    return new XSendFileStreamer();
-
-                case 'x-accel-redirect':
-                    return new XAccelRedirectStreamer();
-
-                default:
-                    return new PhpStreamer();
-            }
+        $this->app->bind(LocalStreamerAdapter::class, function (): LocalStreamerAdapter {
+            return match (config('koel.streaming.method')) {
+                'x-sendfile' => $this->app->make(XSendFileStreamerAdapter::class),
+                'x-accel-redirect' => $this->app->make(XAccelRedirectStreamerAdapter::class),
+                default => $this->app->make(PhpStreamerAdapter::class),
+            };
         });
-
-        $this->app->bind(TranscodingStreamerInterface::class, TranscodingStreamer::class);
-        $this->app->bind(ObjectStorageStreamerInterface::class, S3Streamer::class);
     }
 }

@@ -2,15 +2,18 @@
 
 namespace Tests\Integration\Services;
 
+use App\Events\MultipleSongsLiked;
+use App\Events\MultipleSongsUnliked;
 use App\Events\SongLikeToggled;
-use App\Events\SongsBatchLiked;
-use App\Events\SongsBatchUnliked;
 use App\Models\Interaction;
 use App\Models\Song;
-use App\Models\User;
 use App\Services\InteractionService;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Event;
+use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
+
+use function Tests\create_user;
 
 class InteractionServiceTest extends TestCase
 {
@@ -23,64 +26,70 @@ class InteractionServiceTest extends TestCase
         $this->interactionService = new InteractionService();
     }
 
-    public function testIncreasePlayCount(): void
+    #[Test]
+    public function increasePlayCount(): void
     {
         /** @var Interaction $interaction */
         $interaction = Interaction::factory()->create();
-
+        $currentCount = $interaction->play_count;
         $this->interactionService->increasePlayCount($interaction->song, $interaction->user);
 
-        $updatedInteraction = Interaction::find($interaction->id);
-        self::assertEquals($interaction->play_count + 1, $updatedInteraction->play_count);
+        self::assertSame($currentCount + 1, $interaction->refresh()->play_count);
     }
 
-    public function testToggleLike(): void
+    #[Test]
+    public function toggleLike(): void
     {
-        $this->expectsEvents(SongLikeToggled::class);
+        Event::fake(SongLikeToggled::class);
 
         /** @var Interaction $interaction */
         $interaction = Interaction::factory()->create();
+        $currentLiked = $interaction->liked;
 
         $this->interactionService->toggleLike($interaction->song, $interaction->user);
 
-        $updatedInteraction = Interaction::find($interaction->id);
-        self::assertNotSame($interaction->liked, $updatedInteraction->liked);
+        self::assertNotSame($currentLiked, $interaction->refresh()->liked);
+        Event::assertDispatched(SongLikeToggled::class);
     }
 
-    public function testLikeMultipleSongs(): void
+    #[Test]
+    public function likeMultipleSongs(): void
     {
-        $this->expectsEvents(SongsBatchLiked::class);
+        Event::fake(MultipleSongsLiked::class);
 
         /** @var Collection $songs */
         $songs = Song::factory(2)->create();
+        $user = create_user();
 
-        /** @var User $user */
-        $user = User::factory()->create();
-
-        $this->interactionService->batchLike($songs->pluck('id')->all(), $user);
+        $this->interactionService->likeMany($songs, $user);
 
         $songs->each(static function (Song $song) use ($user): void {
-            self::assertTrue(Interaction::whereSongIdAndUserId($song->id, $user->id)->first()->liked);
+            /** @var Interaction $interaction */
+            $interaction = Interaction::query()
+                ->whereBelongsTo($song)
+                ->whereBelongsTo($user)
+                ->first();
+
+            self::assertTrue($interaction->liked);
         });
+
+        Event::assertDispatched(MultipleSongsLiked::class);
     }
 
-    public function testUnlikeMultipleSongs(): void
+    #[Test]
+    public function unlikeMultipleSongs(): void
     {
-        $this->expectsEvents(SongsBatchUnliked::class);
+        Event::fake(MultipleSongsUnliked::class);
+        $user = create_user();
 
-        /** @var User $user */
-        $user = User::factory()->create();
+        $interactions = Interaction::factory(3)->for($user)->create(['liked' => true]);
 
-        /** @var Collection $interactions */
-        $interactions = Interaction::factory(3)->create([
-            'user_id' => $user->id,
-            'liked' => true,
-        ]);
-
-        $this->interactionService->batchUnlike($interactions->pluck('song.id')->all(), $user);
+        $this->interactionService->unlikeMany($interactions->map(static fn (Interaction $i) => $i->song), $user); // @phpstan-ignore-line
 
         $interactions->each(static function (Interaction $interaction): void {
-            self::assertFalse(Interaction::find($interaction->id)->liked);
+            self::assertFalse($interaction->refresh()->liked);
         });
+
+        Event::assertDispatched(MultipleSongsUnliked::class);
     }
 }

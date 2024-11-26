@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Arr;
 use Intervention\Image\Constraint;
 use Intervention\Image\ImageManager;
 
@@ -10,17 +11,22 @@ class ImageWriter
     private const DEFAULT_MAX_WIDTH = 500;
     private const DEFAULT_QUALITY = 80;
 
-    private ImageManager $imageManager;
+    private string $supportedFormat = 'jpg';
 
-    public function __construct(ImageManager $imageManager)
+    public function __construct(private readonly ImageManager $imageManager)
     {
-        $this->imageManager = $imageManager;
+        $this->supportedFormat = self::getSupportedFormat();
     }
 
-    public function writeFromBinaryData(string $destination, string $data, array $config = []): void
+    private static function getSupportedFormat(): string
+    {
+        return Arr::get(gd_info(), 'WebP Support') ? 'webp' : 'jpg';
+    }
+
+    public function write(string $destination, object|string $source, array $config = []): void
     {
         $img = $this->imageManager
-            ->make($data)
+            ->make($source)
             ->resize(
                 $config['max_width'] ?? self::DEFAULT_MAX_WIDTH,
                 null,
@@ -34,6 +40,6 @@ class ImageWriter
             $img->blur($config['blur']);
         }
 
-        $img->save($destination, $config['quality'] ?? self::DEFAULT_QUALITY);
+        $img->save($destination, $config['quality'] ?? self::DEFAULT_QUALITY, $this->supportedFormat);
     }
 }

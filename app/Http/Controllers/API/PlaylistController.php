@@ -2,66 +2,91 @@
 
 namespace App\Http\Controllers\API;
 
+use App\Exceptions\PlaylistBothSongsAndRulesProvidedException;
+use App\Facades\License;
+use App\Http\Controllers\Controller;
 use App\Http\Requests\API\PlaylistStoreRequest;
 use App\Http\Requests\API\PlaylistUpdateRequest;
+use App\Http\Resources\PlaylistResource;
 use App\Models\Playlist;
 use App\Models\User;
+use App\Repositories\PlaylistFolderRepository;
 use App\Repositories\PlaylistRepository;
 use App\Services\PlaylistService;
+use App\Values\SmartPlaylistRuleGroupCollection;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Support\Arr;
+use Illuminate\Validation\ValidationException;
 
 class PlaylistController extends Controller
 {
-    private PlaylistRepository $playlistRepository;
-    private PlaylistService $playlistService;
-
-    /** @var User */
-    private ?Authenticatable $currentUser;
-
+    /** @param User $user */
     public function __construct(
-        PlaylistRepository $playlistRepository,
-        PlaylistService $playlistService,
-        ?Authenticatable $currentUser
+        private readonly PlaylistService $playlistService,
+        private readonly PlaylistRepository $playlistRepository,
+        private readonly PlaylistFolderRepository $folderRepository,
+        private readonly ?Authenticatable $user
     ) {
-        $this->playlistRepository = $playlistRepository;
-        $this->playlistService = $playlistService;
-        $this->currentUser = $currentUser;
     }
 
     public function index()
     {
-        return response()->json($this->playlistRepository->getAllByCurrentUser());
+        return PlaylistResource::collection($this->playlistRepository->getAllAccessibleByUser($this->user));
     }
 
     public function store(PlaylistStoreRequest $request)
     {
-        $playlist = $this->playlistService->createPlaylist(
-            $request->name,
-            $this->currentUser,
-            (array) $request->songs,
-            $request->rules
-        );
+        $folder = null;
 
-        $playlist->songs = $playlist->songs->pluck('id')->toArray();
+        if ($request->folder_id) {
+            $folder = $this->folderRepository->getOne($request->folder_id);
+            $this->authorize('own', $folder);
+        }
 
-        return response()->json($playlist);
+        try {
+            $playlist = $this->playlistService->createPlaylist(
+                $request->name,
+                $this->user,
+                $folder,
+                Arr::wrap($request->songs),
+                $request->rules ? SmartPlaylistRuleGroupCollection::create(Arr::wrap($request->rules)) : null,
+                $request->own_songs_only && $request->rules && License::isPlus()
+            );
+
+            return PlaylistResource::make($playlist);
+        } catch (PlaylistBothSongsAndRulesProvidedException $e) {
+            throw ValidationException::withMessages(['songs' => [$e->getMessage()]]);
+        }
     }
 
     public function update(PlaylistUpdateRequest $request, Playlist $playlist)
     {
-        $this->authorize('owner', $playlist);
+        $this->authorize('own', $playlist);
 
-        $playlist->update($request->only('name', 'rules'));
+        $folder = null;
 
-        return response()->json($playlist);
+        if ($request->folder_id) {
+            $folder = $this->folderRepository->getOne($request->folder_id);
+            $this->authorize('own', $folder);
+        }
+
+        return PlaylistResource::make(
+            $this->playlistService->updatePlaylist(
+                $playlist,
+                $request->name,
+                $folder,
+                $request->rules ? SmartPlaylistRuleGroupCollection::create(Arr::wrap($request->rules)) : null,
+                $request->own_songs_only && $request->rules && License::isPlus()
+            )
+        );
     }
 
     public function destroy(Playlist $playlist)
     {
-        $this->authorize('owner', $playlist);
+        $this->authorize('own', $playlist);
 
         $playlist->delete();
 
-        return response()->json();
+        return response()->noContent();
     }
 }

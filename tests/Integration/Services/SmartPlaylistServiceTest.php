@@ -2,13 +2,19 @@
 
 namespace Tests\Integration\Services;
 
+use App\Models\Album;
+use App\Models\Artist;
+use App\Models\Interaction;
+use App\Models\Playlist;
+use App\Models\Song;
 use App\Models\User;
 use App\Services\SmartPlaylistService;
-use App\Values\SmartPlaylistRule;
-use App\Values\SmartPlaylistRuleGroup;
-use Carbon\Carbon;
-use Illuminate\Support\Collection;
+use Illuminate\Database\Eloquent\Collection;
+use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
+
+use function Tests\create_admin;
+use function Tests\create_user;
 
 class SmartPlaylistServiceTest extends TestCase
 {
@@ -19,144 +25,547 @@ class SmartPlaylistServiceTest extends TestCase
         parent::setUp();
 
         $this->service = app(SmartPlaylistService::class);
-        Carbon::setTestNow(new Carbon('2018-07-15'));
     }
 
-    /** @return array<mixed> */
-    private function readFixtureFile(string $fileName): array
+    #[Test]
+    public function titleIs(): void
     {
-        return json_decode(file_get_contents(__DIR__ . '/../../blobs/rules/' . $fileName), true);
+        $matches = Song::factory()->count(3)->create(['title' => 'Foo Something']);
+        Song::factory()->count(3)->create(['title' => 'Bar Something']);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'title',
+                        'operator' => 'is',
+                        'value' => ['Foo Something'],
+                    ],
+                ],
+            ],
+        ]);
     }
 
-    /** @return array<array<mixed>> */
-    public function provideRuleConfigs(): array
+    #[Test]
+    public function titleIsNot(): void
     {
-        return [
-            'is' => [
-                $this->readFixtureFile('is.json'),
-                'select * from "songs" where ("title" = ?)',
-                ['Foo'],
+        $matches = Song::factory()->count(3)->create(['title' => 'Foo Something']);
+        Song::factory()->count(3)->create(['title' => 'Bar Something']);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'title',
+                        'operator' => 'isNot',
+                        'value' => ['Bar Something'],
+                    ],
+                ],
             ],
-            'is not' => [
-                $this->readFixtureFile('isNot.json'),
-                'select * from "songs" where ("title" <> ?)',
-                ['Foo'],
-            ],
-            'contains' => [
-                $this->readFixtureFile('contains.json'),
-                'select * from "songs" where ("title" LIKE ?)',
-                ['%Foo%'],
-            ],
-            'does not contain' => [
-                $this->readFixtureFile('doesNotContain.json'),
-                'select * from "songs" where ("title" NOT LIKE ?)',
-                ['%Foo%'],
-            ],
-            'begins with' => [
-                $this->readFixtureFile('beginsWith.json'),
-                'select * from "songs" where ("title" LIKE ?)',
-                ['Foo%'],
-            ],
-            'ends with' => [
-                $this->readFixtureFile('endsWith.json'),
-                'select * from "songs" where ("title" LIKE ?)',
-                ['%Foo'],
-            ],
-            'is between' => [
-                $this->readFixtureFile('isBetween.json'),
-                'select * from "songs" where ("created_at" between ? and ?)',
-                ['2021.10.01', '2021.11.01'],
-            ],
-            'in last' => [
-                $this->readFixtureFile('inLast.json'),
-                'select * from "songs" where ("created_at" >= ?)',
-                ['2018-07-08 00:00:00'],
-            ],
-            'not in last' => [
-                $this->readFixtureFile('notInLast.json'),
-                'select * from "songs" where ("created_at" < ?)',
-                ['2018-07-08 00:00:00'],
-            ],
-            'is less than' => [
-                $this->readFixtureFile('isLessThan.json'),
-                'select * from "songs" where ("length" < ?)',
-                ['300'],
-            ],
-            'is and is not' => [
-                $this->readFixtureFile('is and isNot.json'),
-                'select * from "songs" where ("title" = ? and exists (select * from "artists" where "songs"."artist_id" = "artists"."id" and "name" <> ?))', // @phpcs-ignore-line
-                ['Foo', 'Bar'],
-            ],
-            '(is and is not) or (is and is greater than)' => [
-                $this->readFixtureFile('(is and isNot) or (is and isGreaterThan).json'),
-                'select * from "songs" where ("title" = ? and exists (select * from "albums" where "songs"."album_id" = "albums"."id" and "name" <> ?)) or ("title" = ? and "created_at" > ?)', // @phpcs-ignore-line
-                ['Foo', 'Bar', 'Baz', '2021.10.01'],
-            ],
-            'is or is' => [
-                $this->readFixtureFile('is or is.json'),
-                'select * from "songs" where ("title" = ?) or (exists (select * from "artists" where "songs"."artist_id" = "artists"."id" and "name" = ?))', // @phpcs-ignore-line
-                ['Foo', 'Bar'],
-            ],
-        ];
+        ]);
     }
 
-    /** @dataProvider provideRuleConfigs */
-    public function testBuildQueryForRules(array $rawRules, string $sql, array $bindings): void
+    #[Test]
+    public function titleContains(): void
     {
-        $ruleGroups = collect($rawRules)->map(static function (array $group): SmartPlaylistRuleGroup {
-            return SmartPlaylistRuleGroup::tryCreate($group);
-        });
+        $matches = Song::factory()->count(3)->create(['title' => 'Foo Something']);
+        Song::factory()->count(3)->create(['title' => 'Foo Nothing']);
 
-        $query = $this->service->buildQueryFromRules($ruleGroups);
-        self::assertSame($sql, $query->toSql());
-        $queryBinding = $query->getBindings();
-
-        for ($i = 0, $count = count($queryBinding); $i < $count; ++$i) {
-            self::assertSame(
-                $bindings[$i],
-                is_object($queryBinding[$i]) ? (string) $queryBinding[$i] : $queryBinding[$i]
-            );
-        }
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'title',
+                        'operator' => 'contains',
+                        'value' => ['Some'],
+                    ],
+                ],
+            ],
+        ]);
     }
 
-    public function testAddRequiresUserRules(): void
+    #[Test]
+    public function titleDoesNotContain(): void
     {
-        $ruleGroups = collect($this->readFixtureFile('requiresUser.json'))->map(
-            static function (array $group): SmartPlaylistRuleGroup {
-                return SmartPlaylistRuleGroup::tryCreate($group);
-            }
+        $matches = Song::factory()->count(3)->create(['title' => 'Foo Something']);
+        Song::factory()->count(3)->create(['title' => 'Foo Nothing']);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'title',
+                        'operator' => 'notContain',
+                        'value' => ['Nothing'],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    #[Test]
+    public function titleBeginsWith(): void
+    {
+        $matches = Song::factory()->count(3)->create(['title' => 'Foo Something']);
+        Song::factory()->count(3)->create(['title' => 'Bar Something']);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'title',
+                        'operator' => 'beginsWith',
+                        'value' => ['Foo'],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    #[Test]
+    public function titleEndsWith(): void
+    {
+        $matches = Song::factory()->count(3)->create(['title' => 'Foo Something']);
+        Song::factory()->count(3)->create(['title' => 'Foo Nothing']);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'title',
+                        'operator' => 'endsWith',
+                        'value' => ['Something'],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    #[Test]
+    public function albumIs(): void
+    {
+        $albums = Album::factory()->count(2)->create(['name' => 'Foo Album']);
+
+        $matches = Song::factory()->count(3)->for($albums[0])->create()
+            ->merge(Song::factory()->count(2)->for($albums[1])->create());
+
+        Song::factory()->count(3)->create();
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'album.name',
+                        'operator' => 'is',
+                        'value' => ['Foo Album'],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    #[Test]
+    public function artistIs(): void
+    {
+        $matches = Song::factory()
+            ->count(3)
+            ->for(Artist::factory()->create(['name' => 'Foo Artist']))
+            ->create();
+
+        Song::factory()->count(3)->create();
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'artist.name',
+                        'operator' => 'is',
+                        'value' => ['Foo Artist'],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    #[Test]
+    public function genreIsOrContains(): void
+    {
+        $matches = Song::factory()->count(3)->create(['genre' => 'Foo Genre'])
+            ->merge(Song::factory()->count(2)->create(['genre' => 'Bar Genre']));
+
+        Song::factory()->count(3)->create(['genre' => 'Baz Genre']);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'genre',
+                        'operator' => 'is',
+                        'value' => ['Foo Genre'],
+                    ],
+                ],
+            ],
+            [
+                'id' => '70fe0cbd-c0e3-4ce2-806b-30153795bdeb',
+                'rules' => [
+                    [
+                        'id' => '50f1e8c1-170b-46a0-b752-d515440b34d9',
+                        'model' => 'genre',
+                        'operator' => 'contains',
+                        'value' => ['Bar'],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    #[Test]
+    public function yearIsGreaterThan(): void
+    {
+        $matches = Song::factory()->count(3)->create(['year' => 2030])
+            ->merge(Song::factory()->count(2)->create(['year' => 2022]));
+
+        Song::factory()->count(3)->create(['year' => 2020]);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'year',
+                        'operator' => 'isGreaterThan',
+                        'value' => [2021],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    #[Test]
+    public function yearIsLessThan(): void
+    {
+        $matches = Song::factory()->count(3)->create(['year' => 1980])
+            ->merge(Song::factory()->count(2)->create(['year' => 1978]));
+
+        Song::factory()->count(3)->create(['year' => 1991]);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'year',
+                        'operator' => 'isLessThan',
+                        'value' => [1981],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    #[Test]
+    public function yearIsBetween(): void
+    {
+        $matches = Song::factory()->count(3)->create(['year' => 1980])
+            ->merge(Song::factory()->count(2)->create(['year' => 1978]));
+
+        Song::factory()->count(3)->create(['year' => 1991]);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'year',
+                        'operator' => 'isBetween',
+                        'value' => [1970, 1985],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    #[Test]
+    public function playCountIsGreaterThan(): void
+    {
+        $user = create_user();
+        $matches = Song::factory()->count(2)->create();
+
+        $notMatch = Song::factory()->create();
+
+        Interaction::factory()
+            ->for($matches[0])
+            ->for($user)
+            ->create(['play_count' => 1000]);
+
+        Interaction::factory()
+            ->for($matches[1])
+            ->for($user)
+            ->create(['play_count' => 2000]);
+
+        Interaction::factory()
+            ->for($user)
+            ->for($notMatch)
+            ->create(['play_count' => 500]);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'interactions.play_count',
+                        'operator' => 'isGreaterThan',
+                        'value' => [999],
+                    ],
+                ],
+            ],
+        ], $user);
+    }
+
+    #[Test]
+    public function lastPlayedAtIsInLast(): void
+    {
+        $user = create_user();
+        $matches = Song::factory()->count(2)->create();
+
+        $notMatch = Song::factory()->create();
+
+        Interaction::factory()
+            ->for($matches[0])
+            ->for($user)
+            ->create(['last_played_at' => now()->subDays(2)]);
+
+        Interaction::factory()
+            ->for($matches[1])
+            ->for($user)
+            ->create(['last_played_at' => now()->subDay()]);
+
+        Interaction::factory()
+            ->for($user)
+            ->for($notMatch)
+            ->count(2)
+            ->create(['last_played_at' => now()->subDays(4)]);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'interactions.last_played_at',
+                        'operator' => 'inLast',
+                        'value' => [3],
+                    ],
+                ],
+            ],
+        ], $user);
+    }
+
+    #[Test]
+    public function lastPlayedNotInLast(): void
+    {
+        $user = create_user();
+        $matches = Song::factory()->count(2)->create();
+
+        $notMatch = Song::factory()->create();
+
+        Interaction::factory()
+            ->for($matches[0])
+            ->for($user)
+            ->create(['last_played_at' => now()->subDays(4)]);
+
+        Interaction::factory()
+            ->for($matches[1])
+            ->for($user)
+            ->create(['last_played_at' => now()->subDays(3)]);
+
+        Interaction::factory()
+            ->for($user)
+            ->for($notMatch)
+            ->count(2)
+            ->create(['last_played_at' => now()->subDays(2)]);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'interactions.last_played_at',
+                        'operator' => 'notInLast',
+                        'value' => [2],
+                    ],
+                ],
+            ],
+        ], $user);
+    }
+
+    #[Test]
+    public function lastPlayedIs(): void
+    {
+        $user = create_user();
+        $matches = Song::factory()->count(2)->create();
+
+        $notMatch = Song::factory()->create();
+
+        Interaction::factory()
+            ->for($matches[0])
+            ->for($user)
+            ->create(['last_played_at' => now()]);
+
+        Interaction::factory()
+            ->for($matches[1])
+            ->for($user)
+            ->create(['last_played_at' => now()]);
+
+        Interaction::factory()
+            ->for($user)
+            ->for($notMatch)
+            ->count(2)
+            ->create(['last_played_at' => now()->subDays(4)]);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'interactions.last_played_at',
+                        'operator' => 'is',
+                        'value' => [now()->format('Y-m-d')],
+                    ],
+                ],
+            ],
+        ], $user);
+    }
+
+    #[Test]
+    public function lengthIsGreaterThan(): void
+    {
+        $matches = Song::factory()->count(3)->create(['length' => 300])
+            ->merge(Song::factory()->count(2)->create(['length' => 200]));
+
+        Song::factory()->count(3)->create(['length' => 100]);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'length',
+                        'operator' => 'isGreaterThan',
+                        'value' => [199],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    #[Test]
+    public function lengthIsInBetween(): void
+    {
+        $matches = Song::factory()->count(3)->create(['length' => 300])
+            ->merge(Song::factory()->count(2)->create(['length' => 200]));
+
+        Song::factory()->count(3)->create(['length' => 100]);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'length',
+                        'operator' => 'isBetween',
+                        'value' => [199, 301],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    #[Test]
+    public function dateAddedInLast(): void
+    {
+        $matches = Song::factory()->count(3)->create(['created_at' => now()->subDays(2)])
+            ->merge(Song::factory()->count(2)->create(['created_at' => now()->subDay()]))
+            ->merge(Song::factory()->count(1)->create(['created_at' => today()]));
+
+        Song::factory()->count(3)->create(['created_at' => now()->subDays(4)]);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'created_at',
+                        'operator' => 'inLast',
+                        'value' => [3],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    #[Test]
+    public function dateAddedNotInLast(): void
+    {
+        $matches = Song::factory()->count(3)->create(['created_at' => now()->subDays(4)])
+            ->merge(Song::factory()->count(2)->create(['created_at' => now()->subDays(5)]))
+            ->merge(Song::factory()->count(1)->create(['created_at' => now()->subDays(6)]));
+
+        Song::factory()->count(3)->create(['created_at' => now()->subDays(2)]);
+
+        $this->assertMatchesAgainstRules($matches, [
+            [
+                'id' => 'aaf61bc3-3bdf-4fa4-b9f3-f7f7838ed502',
+                'rules' => [
+                    [
+                        'id' => '70b08372-b733-4fe2-aedb-639f77120d6d',
+                        'model' => 'created_at',
+                        'operator' => 'notInLast',
+                        'value' => [3],
+                    ],
+                ],
+            ],
+        ]);
+    }
+
+    protected function assertMatchesAgainstRules(
+        Collection $matches,
+        array $rules,
+        ?User $owner = null,
+    ): void {
+        /** @var Playlist $playlist */
+        $playlist = Playlist::factory()->for($owner ?? create_admin())->create(['rules' => $rules]);
+
+        self::assertEqualsCanonicalizing(
+            $matches->modelKeys(),
+            $this->service->getSongs($playlist)->modelKeys()
         );
-
-        /** @var User $user */
-        $user = User::factory()->create();
-
-        /** @var Collection|array<SmartPlaylistRule> $finalRules */
-        $finalRules = $this->service->addRequiresUserRules($ruleGroups, $user)->first()->rules;
-
-        self::assertCount(2, $finalRules);
-        self::assertTrue($finalRules[1]->equals([
-            'model' => 'interactions.user_id',
-            'operator' => 'is',
-            'value' => [$user->id],
-        ]));
-    }
-
-    public function testAllOperatorsAreCovered(): void
-    {
-        $rules = collect($this->provideRuleConfigs())->map(static function (array $config): array {
-            return $config[0];
-        });
-
-        $operators = [];
-
-        foreach ($rules as $rule) {
-            foreach ($rule as $ruleGroup) {
-                foreach ($ruleGroup['rules'] as $config) {
-                    $operators[] = $config['operator'];
-                }
-            }
-        }
-
-        self::assertSame(count(SmartPlaylistRule::VALID_OPERATORS), count(array_unique($operators)));
     }
 }

@@ -2,56 +2,71 @@
 
 namespace App\Http\Controllers\API;
 
+use App\Http\Controllers\Controller;
 use App\Http\Requests\API\UserLoginRequest;
-use App\Models\User;
-use App\Repositories\UserRepository;
-use App\Services\TokenManager;
-use Illuminate\Contracts\Auth\Authenticatable;
+use App\Services\AuthenticationService;
+use App\Values\CompositeToken;
+use Closure;
 use Illuminate\Foundation\Auth\ThrottlesLogins;
-use Illuminate\Hashing\HashManager;
+use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Throwable;
 
 class AuthController extends Controller
 {
     use ThrottlesLogins;
 
-    private UserRepository $userRepository;
-    private HashManager $hash;
-    private TokenManager $tokenManager;
-
-    /** @var User */
-    private ?Authenticatable $currentUser;
-
-    public function __construct(
-        UserRepository $userRepository,
-        HashManager $hash,
-        TokenManager $tokenManager,
-        ?Authenticatable $currentUser
-    ) {
-        $this->userRepository = $userRepository;
-        $this->hash = $hash;
-        $this->tokenManager = $tokenManager;
-        $this->currentUser = $currentUser;
+    public function __construct(private readonly AuthenticationService $auth)
+    {
     }
 
     public function login(UserLoginRequest $request)
     {
-        /** @var User|null $user */
-        $user = $this->userRepository->getFirstWhere('email', $request->email);
+        $compositeToken = $this->throttleLoginRequest(
+            fn () => $this->auth->login($request->email, $request->password),
+            $request
+        );
 
-        if (!$user || !$this->hash->check($request->password, $user->password)) {
-            abort(Response::HTTP_UNAUTHORIZED, 'Invalid credentials');
-        }
-
-        return response()->json([
-            'token' => $this->tokenManager->createToken($user)->plainTextToken,
-        ]);
+        return response()->json($compositeToken->toArray());
     }
 
-    public function logout()
+    public function loginUsingOneTimeToken(Request $request)
     {
-        $this->tokenManager->destroyTokens($this->currentUser);
+        $compositeToken = $this->throttleLoginRequest(
+            fn () => $this->auth->loginViaOneTimeToken($request->input('token')),
+            $request
+        );
+
+        return response()->json($compositeToken->toArray());
+    }
+
+    private function throttleLoginRequest(Closure $callback, Request $request): CompositeToken
+    {
+        if ($this->hasTooManyLoginAttempts($request)) {
+            $this->fireLockoutEvent($request);
+            $this->sendLockoutResponse($request);
+        }
+
+        try {
+            return $callback();
+        } catch (Throwable) {
+            $this->incrementLoginAttempts($request);
+            abort(Response::HTTP_UNAUTHORIZED, 'Invalid credentials');
+        }
+    }
+
+    public function logout(Request $request): Response
+    {
+        rescue(fn () => $this->auth->logoutViaBearerToken($request->bearerToken()));
 
         return response()->noContent();
+    }
+
+    /**
+     * For the throttle middleware.
+     */
+    protected function username(): string
+    {
+        return 'email';
     }
 }

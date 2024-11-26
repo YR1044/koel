@@ -2,13 +2,17 @@
 
 namespace App\Models;
 
+use App\Builders\ArtistBuilder;
 use App\Facades\Util;
-use Illuminate\Database\Eloquent\Builder;
+use App\Models\Concerns\SupportsDeleteWhereValueNotIn;
+use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Relations\HasManyThrough;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\File;
 use Laravel\Scout\Searchable;
 
 /**
@@ -17,22 +21,21 @@ use Laravel\Scout\Searchable;
  * @property string|null $image Public URL to the artist's image
  * @property bool $is_unknown If the artist is Unknown Artist
  * @property bool $is_various If the artist is Various Artist
- * @property Collection $songs
+ * @property Collection<array-key, Song> $songs
  * @property bool $has_image If the artist has a (non-default) image
  * @property string|null $image_path Absolute path to the artist's image
- *
- * @method static self find(int $id)
- * @method static self firstOrCreate(array $where, array $params = [])
- * @method static Builder where(...$params)
- * @method static self first()
- * @method static Builder whereName(string $name)
- * @method static Builder orderBy(...$params)
+ * @property float|string $length Total length of the artist's songs in seconds (dynamically calculated)
+ * @property string|int $play_count Total number of times the artist has been played (dynamically calculated)
+ * @property string|int $song_count Total number of songs by the artist (dynamically calculated)
+ * @property string|int $album_count Total number of albums by the artist (dynamically calculated)
+ * @property Carbon $created_at
+ * @property Collection<array-key, Album> $albums
  */
 class Artist extends Model
 {
     use HasFactory;
     use Searchable;
-    use SupportsDeleteWhereIDsNotIn;
+    use SupportsDeleteWhereValueNotIn;
 
     public const UNKNOWN_ID = 1;
     public const UNKNOWN_NAME = 'Unknown Artist';
@@ -42,9 +45,14 @@ class Artist extends Model
     protected $guarded = ['id'];
     protected $hidden = ['created_at', 'updated_at'];
 
-    public static function getVariousArtist(): self
+    public static function query(): ArtistBuilder
     {
-        return static::find(self::VARIOUS_ID);
+        return parent::query();
+    }
+
+    public function newEloquentBuilder($query): ArtistBuilder
+    {
+        return new ArtistBuilder($query);
     }
 
     /**
@@ -60,7 +68,7 @@ class Artist extends Model
             $name = mb_convert_encoding($name, 'UTF-8', $encoding);
         }
 
-        return static::firstOrCreate(['name' => trim($name) ?: self::UNKNOWN_NAME]);
+        return static::query()->firstOrCreate(['name' => trim($name) ?: self::UNKNOWN_NAME]);
     }
 
     public function albums(): HasMany
@@ -68,60 +76,52 @@ class Artist extends Model
         return $this->hasMany(Album::class);
     }
 
-    /**
-     * An artist can have many songs.
-     * Unless he is Rick Astley.
-     */
-    public function songs(): HasManyThrough
+    public function songs(): HasMany
     {
-        return $this->hasManyThrough(Song::class, Album::class);
+        return $this->hasMany(Song::class);
     }
 
-    public function getIsUnknownAttribute(): bool
+    protected function isUnknown(): Attribute
     {
-        return $this->id === self::UNKNOWN_ID;
+        return Attribute::get(fn (): bool => $this->id === self::UNKNOWN_ID);
     }
 
-    public function getIsVariousAttribute(): bool
+    protected function isVarious(): Attribute
     {
-        return $this->id === self::VARIOUS_ID;
+        return Attribute::get(fn (): bool => $this->id === self::VARIOUS_ID);
     }
 
     /**
      * Sometimes the tags extracted from getID3 are HTML entity encoded.
      * This makes sure they are always sane.
      */
-    public function getNameAttribute(string $value): string
+    protected function name(): Attribute
     {
-        return html_entity_decode($value ?: self::UNKNOWN_NAME);
+        return Attribute::get(static fn (string $value): string => html_entity_decode($value) ?: self::UNKNOWN_NAME)
+            ->shouldCache();
     }
 
     /**
      * Turn the image name into its absolute URL.
      */
-    public function getImageAttribute(?string $value): ?string
+    protected function image(): Attribute
     {
-        return $value ? artist_image_url($value) : null;
+        return Attribute::get(static fn (?string $value): ?string => artist_image_url($value))->shouldCache();
     }
 
-    public function getImagePathAttribute(): ?string
+    protected function imagePath(): Attribute
     {
-        if (!$this->has_image) {
-            return null;
-        }
-
-        return artist_image_path(array_get($this->attributes, 'image'));
+        return Attribute::get(fn (): ?string => artist_image_path(Arr::get($this->attributes, 'image')))
+            ->shouldCache();
     }
 
-    public function getHasImageAttribute(): bool
+    protected function hasImage(): Attribute
     {
-        $image = array_get($this->attributes, 'image');
+        return Attribute::get(function (): bool {
+            $image = Arr::get($this->attributes, 'image');
 
-        if (!$image) {
-            return false;
-        }
-
-        return file_exists(artist_image_path($image));
+            return $image && (app()->runningUnitTests() || File::exists(artist_image_path($image)));
+        })->shouldCache();
     }
 
     /** @return array<mixed> */

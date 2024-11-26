@@ -3,35 +3,27 @@
 namespace App\Values;
 
 use Illuminate\Contracts\Support\Arrayable;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
-use Throwable;
+use Webmozart\Assert\Assert;
 
 final class SmartPlaylistRuleGroup implements Arrayable
 {
-    public ?int $id;
-
-    /** @var Collection|array<SmartPlaylistRule> */
-    public Collection $rules;
-
-    public static function tryCreate(array $jsonArray): ?self
+    private function __construct(public string $id, public Collection $rules)
     {
-        try {
-            return self::create($jsonArray);
-        } catch (Throwable $exception) {
-            return null;
-        }
+        Assert::uuid($id);
     }
 
-    public static function create(array $jsonArray): self
+    public static function make(array $array): self
     {
-        $group = new self();
-        $group->id = $jsonArray['id'] ?? null;
-
-        $group->rules = collect(array_map(static function (array $rawRuleConfig) {
-            return SmartPlaylistRule::create($rawRuleConfig);
-        }, $jsonArray['rules']));
-
-        return $group;
+        return new self(
+            id: Arr::get($array, 'id'),
+            rules: collect(Arr::get($array, 'rules', []))->transform(
+                static function (array|SmartPlaylistRule $rule): SmartPlaylistRule {
+                    return $rule instanceof SmartPlaylistRule ? $rule : SmartPlaylistRule::make($rule);
+                }
+            ),
+        );
     }
 
     /** @return array<mixed> */

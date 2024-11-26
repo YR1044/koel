@@ -2,35 +2,74 @@
 
 namespace Tests\Integration\Services;
 
+use App\Http\Integrations\iTunes\Requests\GetTrackRequest;
+use App\Models\Album;
+use App\Models\Artist;
 use App\Services\ITunesService;
-use GuzzleHttp\Client;
-use GuzzleHttp\Psr7\Response;
-use Illuminate\Contracts\Cache\Repository as Cache;
-use Illuminate\Log\Logger;
-use Mockery;
+use Illuminate\Support\Facades\Cache;
+use PHPUnit\Framework\Attributes\Test;
+use Saloon\Http\Faking\MockResponse;
+use Saloon\Laravel\Saloon;
 use Tests\TestCase;
 
 class ITunesServiceTest extends TestCase
 {
-    public function testGetTrackUrl(): void
-    {
-        $term = 'Foo Bar';
+    private ITunesService $service;
 
-        /** @var Client $client */
-        $client = Mockery::mock(Client::class, [
-            'get' => new Response(200, [], file_get_contents(__DIR__ . '../../../blobs/itunes/track.json')),
+    public function setUp(): void
+    {
+        parent::setUp();
+
+        $this->service = app(ITunesService::class);
+    }
+
+    #[Test]
+    public function configuration(): void
+    {
+        config(['koel.itunes.enabled' => true]);
+        self::assertTrue($this->service->used());
+
+        config(['koel.itunes.enabled' => false]);
+        self::assertFalse($this->service->used());
+    }
+
+    #[Test]
+    public function getTrackUrl(): void
+    {
+        config(['koel.itunes.enabled' => true]);
+        config(['koel.itunes.affiliate_id' => 'foo']);
+
+        Saloon::fake([
+            GetTrackRequest::class => MockResponse::make(body: [
+                'resultCount' => 1,
+                'results' => [['trackViewUrl' => 'https://itunes.apple.com/bar']],
+            ]),
         ]);
 
-        $cache = app(Cache::class);
-        $logger = app(Logger::class);
+        /** @var Album $album */
+        $album = Album::factory()
+            ->for(Artist::factory()->create(['name' => 'Queen']))
+            ->create(['name' => 'A Night at the Opera']);
 
-        $url = (new ITunesService($client, $cache, $logger))->getTrackUrl($term);
-
-        self::assertEquals(
-            'https://itunes.apple.com/us/album/i-remember-you/id265611220?i=265611396&uo=4&at=1000lsGu',
-            $url
+        self::assertSame(
+            'https://itunes.apple.com/bar?at=foo',
+            $this->service->getTrackUrl('Bohemian Rhapsody', $album)
         );
 
-        self::assertNotNull(cache()->get('b57a14784d80c58a856e0df34ff0c8e2'));
+        self::assertSame(
+            'https://itunes.apple.com/bar?at=foo',
+            Cache::get('itunes.track.5f0467bebbb2b26bf9dc7b19f3d85077')
+        );
+
+        Saloon::assertSent(static function (GetTrackRequest $request): bool {
+            self::assertSame([
+                'term' => 'Bohemian Rhapsody A Night at the Opera Queen',
+                'media' => 'music',
+                'entity' => 'song',
+                'limit' => 1,
+            ], $request->query()->all());
+
+            return true;
+        });
     }
 }

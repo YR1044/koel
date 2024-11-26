@@ -11,23 +11,18 @@ use Illuminate\Http\Response;
 
 class LastfmController extends Controller
 {
-    private LastfmService $lastfm;
-    private TokenManager $tokenManager;
-
-    /** @var User */
-    private ?Authenticatable $currentUser;
-
-    public function __construct(LastfmService $lastfm, TokenManager $tokenManager, ?Authenticatable $currentUser)
-    {
-        $this->lastfm = $lastfm;
-        $this->tokenManager = $tokenManager;
-        $this->currentUser = $currentUser;
+    /** @param User $currentUser */
+    public function __construct(
+        private readonly LastfmService $lastfm,
+        private readonly TokenManager $tokenManager,
+        private readonly ?Authenticatable $currentUser
+    ) {
     }
 
     public function connect()
     {
         abort_unless(
-            $this->lastfm->enabled(),
+            LastfmService::enabled(),
             Response::HTTP_NOT_IMPLEMENTED,
             'Koel is not configured to use with Last.fm yet.'
         );
@@ -39,7 +34,7 @@ class LastfmController extends Controller
             $this->tokenManager->createToken($this->currentUser)->plainTextToken
         ));
 
-        $url = sprintf('https://www.last.fm/api/auth/?api_key=%s&cb=%s', $this->lastfm->getKey(), $callbackUrl);
+        $url = sprintf('https://www.last.fm/api/auth/?api_key=%s&cb=%s', config('koel.lastfm.key'), $callbackUrl);
 
         return redirect($url);
     }

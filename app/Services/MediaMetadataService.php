@@ -4,42 +4,36 @@ namespace App\Services;
 
 use App\Models\Album;
 use App\Models\Artist;
-use Psr\Log\LoggerInterface;
-use Throwable;
+use App\Models\Playlist;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Str;
 
 class MediaMetadataService
 {
-    private ImageWriter $imageWriter;
-    private LoggerInterface $logger;
-
-    public function __construct(ImageWriter $imageWriter, LoggerInterface $logger)
-    {
-        $this->imageWriter = $imageWriter;
-        $this->logger = $logger;
+    public function __construct(
+        private readonly SpotifyService $spotifyService,
+        private readonly ImageWriter $imageWriter
+    ) {
     }
 
-    public function downloadAlbumCover(Album $album, string $imageUrl): void
+    public function tryDownloadAlbumCover(Album $album): void
     {
-        $extension = explode('.', $imageUrl);
-        $this->writeAlbumCover($album, file_get_contents($imageUrl), last($extension));
+        optional($this->spotifyService->tryGetAlbumCover($album), function (string $coverUrl) use ($album): void {
+            $this->writeAlbumCover($album, $coverUrl);
+        });
     }
 
     /**
-     * Write an album cover image file with binary data and update the Album with the new cover attribute.
+     * Write an album cover image file and update the Album with the new cover attribute.
      *
-     * @param string $destination The destination path. Automatically generated if empty.
+     * @param string $source Path, URL, or even binary data. See https://image.intervention.io/v2/api/make.
+     * @param string|null $destination The destination path. Automatically generated if empty.
      */
-    public function writeAlbumCover(
-        Album $album,
-        string $binaryData,
-        string $extension,
-        string $destination = '',
-        bool $cleanUp = true
-    ): void {
-        try {
-            $extension = trim(strtolower($extension), '. ');
-            $destination = $destination ?: $this->generateAlbumCoverPath($extension);
-            $this->imageWriter->writeFromBinaryData($destination, $binaryData);
+    public function writeAlbumCover(Album $album, string $source, ?string $destination = '', bool $cleanUp = true): void
+    {
+        rescue(function () use ($album, $source, $destination, $cleanUp): void {
+            $destination = $destination ?: $this->generateAlbumCoverPath();
+            $this->imageWriter->write($destination, $source);
 
             if ($cleanUp) {
                 $this->deleteAlbumCoverFiles($album);
@@ -47,62 +41,67 @@ class MediaMetadataService
 
             $album->update(['cover' => basename($destination)]);
             $this->createThumbnailForAlbum($album);
-        } catch (Throwable $e) {
-            $this->logger->error($e);
-        }
+        });
     }
 
-    public function downloadArtistImage(Artist $artist, string $imageUrl): void
+    public function tryDownloadArtistImage(Artist $artist): void
     {
-        $extension = explode('.', $imageUrl);
-        $this->writeArtistImage($artist, file_get_contents($imageUrl), last($extension));
+        optional($this->spotifyService->tryGetArtistImage($artist), function (string $imageUrl) use ($artist): void {
+            $this->writeArtistImage($artist, $imageUrl);
+        });
     }
 
     /**
-     * Write an artist image file with binary data and update the Artist with the new image attribute.
+     * Write an artist image file update the Artist with the new image attribute.
      *
-     * @param string $destination The destination path. Automatically generated if empty.
+     * @param string $source Path, URL, or even binary data. See https://image.intervention.io/v2/api/make.
+     * @param string|null $destination The destination path. Automatically generated if empty.
      */
     public function writeArtistImage(
         Artist $artist,
-        string $binaryData,
-        string $extension,
-        string $destination = '',
+        string $source,
+        ?string $destination = '',
         bool $cleanUp = true
     ): void {
-        try {
-            $extension = trim(strtolower($extension), '. ');
-            $destination = $destination ?: $this->generateArtistImagePath($extension);
-            $this->imageWriter->writeFromBinaryData($destination, $binaryData);
+        rescue(function () use ($artist, $source, $destination, $cleanUp): void {
+            $destination = $destination ?: $this->generateArtistImagePath();
+            $this->imageWriter->write($destination, $source);
 
             if ($cleanUp && $artist->has_image) {
-                @unlink($artist->image_path);
+                File::delete($artist->image_path);
             }
 
             $artist->update(['image' => basename($destination)]);
-        } catch (Throwable $e) {
-            $this->logger->error($e);
-        }
+        });
     }
 
-    /**
-     * Generate the absolute path for an album cover image.
-     *
-     * @param string $extension The extension of the cover (without dot)
-     */
-    private function generateAlbumCoverPath(string $extension): string
+    public function writePlaylistCover(Playlist $playlist, string $source): void
     {
-        return album_cover_path(sprintf('%s.%s', sha1(uniqid()), $extension));
+        rescue(function () use ($playlist, $source): void {
+            $destination = $this->generatePlaylistCoverPath();
+            $this->imageWriter->write($destination, $source);
+
+            if ($playlist->cover_path) {
+                File::delete($playlist->cover_path);
+            }
+
+            $playlist->update(['cover' => basename($destination)]);
+        });
     }
 
-    /**
-     * Generate the absolute path for an artist image.
-     *
-     * @param string $extension The extension of the cover (without dot)
-     */
-    private function generateArtistImagePath($extension): string
+    private function generateAlbumCoverPath(): string
     {
-        return artist_image_path(sprintf('%s.%s', sha1(uniqid()), $extension));
+        return album_cover_path(sprintf('%s.webp', sha1(Str::uuid())));
+    }
+
+    private function generateArtistImagePath(): string
+    {
+        return artist_image_path(sprintf('%s.webp', sha1(Str::uuid())));
+    }
+
+    private function generatePlaylistCoverPath(): string
+    {
+        return playlist_cover_path(sprintf('%s.webp', sha1(Str::uuid())));
     }
 
     /**
@@ -115,7 +114,7 @@ class MediaMetadataService
             return null;
         }
 
-        if (!file_exists($album->thumbnail_path)) {
+        if (!File::exists($album->thumbnail_path)) {
             $this->createThumbnailForAlbum($album);
         }
 
@@ -124,11 +123,7 @@ class MediaMetadataService
 
     private function createThumbnailForAlbum(Album $album): void
     {
-        $this->imageWriter->writeFromBinaryData(
-            $album->thumbnail_path,
-            file_get_contents($album->cover_path),
-            ['max_width' => 48, 'blur' => 10]
-        );
+        $this->imageWriter->write($album->thumbnail_path, $album->cover_path, ['max_width' => 48, 'blur' => 10]);
     }
 
     private function deleteAlbumCoverFiles(Album $album): void
@@ -137,7 +132,15 @@ class MediaMetadataService
             return;
         }
 
-        @unlink($album->cover_path);
-        @unlink($album->thumbnail_path);
+        File::delete($album->cover_path);
+        File::delete($album->thumbnail_path);
+    }
+
+    public function deletePlaylistCover(Playlist $playlist): void
+    {
+        if ($playlist->cover_path) {
+            File::delete($playlist->cover_path);
+            $playlist->update(['cover' => null]);
+        }
     }
 }

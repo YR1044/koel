@@ -2,10 +2,10 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 
 /**
  * @property bool $liked
@@ -13,11 +13,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property Song $song
  * @property User $user
  * @property int $id
- *
- * @method static self firstOrCreate(array $where, array $params = [])
- * @method static self find(int $id)
- * @method static Builder whereSongIdAndUserId(string $songId, string $userId)
- * @method static Builder whereIn(...$params)
+ * @property string $song_id
+ * @property Carbon|string $last_played_at
  */
 class Interaction extends Model
 {
@@ -29,7 +26,7 @@ class Interaction extends Model
     ];
 
     protected $guarded = ['id'];
-    protected $hidden = ['id', 'user_id', 'created_at', 'updated_at'];
+    protected $hidden = ['id', 'user_id', 'created_at', 'updated_at', 'last_played_at'];
 
     public function user(): BelongsTo
     {

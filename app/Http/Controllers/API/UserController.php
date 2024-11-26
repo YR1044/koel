@@ -2,48 +2,64 @@
 
 namespace App\Http\Controllers\API;
 
+use App\Exceptions\UserProspectUpdateDeniedException;
+use App\Http\Controllers\Controller;
 use App\Http\Requests\API\UserStoreRequest;
 use App\Http\Requests\API\UserUpdateRequest;
+use App\Http\Resources\UserResource;
 use App\Models\User;
-use Illuminate\Contracts\Hashing\Hasher as Hash;
+use App\Repositories\UserRepository;
+use App\Services\UserService;
+use Illuminate\Http\Response;
 
 class UserController extends Controller
 {
-    private Hash $hash;
+    public function __construct(
+        private readonly UserRepository $userRepository,
+        private readonly UserService $userService
+    ) {
+    }
 
-    public function __construct(Hash $hash)
+    public function index()
     {
-        $this->hash = $hash;
+        $this->authorize('admin', User::class);
+
+        return UserResource::collection($this->userRepository->getAll());
     }
 
     public function store(UserStoreRequest $request)
     {
-        return response()->json(User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'password' => $this->hash->make($request->password),
-            'is_admin' => $request->is_admin,
-        ]));
+        $this->authorize('admin', User::class);
+
+        return UserResource::make($this->userService->createUser(
+            $request->name,
+            $request->email,
+            $request->password,
+            $request->get('is_admin') ?: false
+        ));
     }
 
     public function update(UserUpdateRequest $request, User $user)
     {
-        $data = $request->only('name', 'email', 'is_admin');
+        $this->authorize('admin', User::class);
 
-        if ($request->password) {
-            $data['password'] = $this->hash->make($request->password);
+        try {
+            return UserResource::make($this->userService->updateUser(
+                user: $user,
+                name: $request->name,
+                email: $request->email,
+                password: $request->password,
+                isAdmin: $request->get('is_admin') ?: false
+            ));
+        } catch (UserProspectUpdateDeniedException) {
+            abort(Response::HTTP_FORBIDDEN, 'Cannot update a user prospect.');
         }
-
-        $user->update($data);
-
-        return response()->json($user);
     }
 
     public function destroy(User $user)
     {
         $this->authorize('destroy', $user);
-
-        $user->delete();
+        $this->userService->deleteUser($user);
 
         return response()->noContent();
     }

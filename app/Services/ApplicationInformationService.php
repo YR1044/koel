@@ -3,23 +3,12 @@
 namespace App\Services;
 
 use GuzzleHttp\Client;
-use Illuminate\Contracts\Cache\Repository as Cache;
-use Illuminate\Log\Logger;
-use Throwable;
+use Illuminate\Support\Facades\Cache;
 
 class ApplicationInformationService
 {
-    private const CACHE_KEY = 'latestKoelVersion';
-
-    private Client $client;
-    private Cache $cache;
-    private Logger $logger;
-
-    public function __construct(Client $client, Cache $cache, Logger $logger)
+    public function __construct(private readonly Client $client)
     {
-        $this->client = $client;
-        $this->cache = $cache;
-        $this->logger = $logger;
     }
 
     /**
@@ -27,15 +16,11 @@ class ApplicationInformationService
      */
     public function getLatestVersionNumber(): string
     {
-        return $this->cache->remember(self::CACHE_KEY, now()->addDay(), function (): string {
-            try {
+        return rescue(function () {
+            return Cache::remember('latestKoelVersion', now()->addDay(), function (): string {
                 return json_decode($this->client->get('https://api.github.com/repos/koel/koel/tags')->getBody())[0]
                     ->name;
-            } catch (Throwable $e) {
-                $this->logger->error($e);
-
-                return koel_version();
-            }
-        });
+            });
+        }) ?? koel_version();
     }
 }

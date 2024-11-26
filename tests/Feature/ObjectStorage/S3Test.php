@@ -2,10 +2,12 @@
 
 namespace Tests\Feature\ObjectStorage;
 
-use App\Events\LibraryChanged;
 use App\Models\Song;
 use Illuminate\Foundation\Testing\WithoutMiddleware;
-use Tests\Feature\TestCase;
+use PHPUnit\Framework\Attributes\Test;
+use Tests\TestCase;
+
+use function Tests\create_admin;
 
 class S3Test extends TestCase
 {
@@ -16,9 +18,13 @@ class S3Test extends TestCase
         parent::setUp();
 
         $this->disableMiddlewareForAllTests();
+
+        // ensure there's a default admin user
+        create_admin();
     }
 
-    public function testStoringASong(): void
+    #[Test]
+    public function storingASong(): void
     {
         $this->post('api/os/s3/song', [
             'bucket' => 'koel',
@@ -31,23 +37,22 @@ class S3Test extends TestCase
                 'duration' => 10,
                 'track' => 5,
             ],
-        ]);
+        ])->assertSuccessful();
 
         /** @var Song $song */
-        $song = Song::where('path', 's3://koel/sample.mp3')->firstOrFail();
+        $song = Song::query()->where('path', 's3://koel/sample.mp3')->firstOrFail();
 
         self::assertSame('A Koel Song', $song->title);
         self::assertSame('Koel Testing Vol. 1', $song->album->name);
         self::assertSame('Koel', $song->artist->name);
         self::assertSame('When you wake up, turn your radio on, and you\'ll hear this simple song', $song->lyrics);
-        self::assertEquals(10, $song->length);
+        self::assertSame(10, (int) $song->length);
         self::assertSame(5, $song->track);
     }
 
-    public function testRemovingASong(): void
+    #[Test]
+    public function removingASong(): void
     {
-        $this->expectsEvents(LibraryChanged::class);
-
         Song::factory()->create([
             'path' => 's3://koel/sample.mp3',
         ]);
