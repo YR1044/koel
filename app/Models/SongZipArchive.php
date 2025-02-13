@@ -4,15 +4,13 @@ namespace App\Models;
 
 use App\Facades\Download;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use RuntimeException;
-use Throwable;
 use ZipArchive;
 
 class SongZipArchive
 {
     private ZipArchive $archive;
-
     private string $path;
 
     /**
@@ -21,7 +19,7 @@ class SongZipArchive
      */
     private array $fileNames = [];
 
-    public function __construct(string $path = '')
+    public function __construct(?string $path = null)
     {
         $this->path = $path ?: self::generateRandomArchivePath();
 
@@ -32,28 +30,24 @@ class SongZipArchive
         }
     }
 
-    public function addSongs(Collection $songs): self
+    public function addSongs(Collection $songs): static
     {
-        $songs->each(function (Song $song): void {
-            $this->addSong($song);
+        $songs->each(fn (Song $song) => $this->addSong($song));
+
+        return $this;
+    }
+
+    public function addSong(Song $song): static
+    {
+        rescue(function () use ($song): void {
+            $path = Download::getLocalPath($song);
+            $this->archive->addFile($path, $this->generateZipContentFileNameFromPath($path));
         });
 
         return $this;
     }
 
-    public function addSong(Song $song): self
-    {
-        try {
-            $path = Download::fromSong($song);
-            $this->archive->addFile($path, $this->generateZipContentFileNameFromPath($path));
-        } catch (Throwable $e) {
-            Log::error($e);
-        }
-
-        return $this;
-    }
-
-    public function finish(): self
+    public function finish(): static
     {
         $this->archive->close();
 
@@ -76,10 +70,8 @@ class SongZipArchive
 
         if (array_key_exists($name, $this->fileNames)) {
             ++$this->fileNames[$name];
-            $parts = explode('.', $name);
-            $ext = $parts[count($parts) - 1];
-            $parts[count($parts) - 1] = $this->fileNames[$name] . ".$ext";
-            $name = implode('.', $parts);
+            $extension = Str::afterLast($name, '.');
+            $name = Str::beforeLast($name, '.') . $this->fileNames[$name] . ".$extension";
         } else {
             $this->fileNames[$name] = 1;
         }

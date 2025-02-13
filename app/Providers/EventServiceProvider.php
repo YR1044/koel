@@ -2,68 +2,55 @@
 
 namespace App\Providers;
 
-use App\Events\AlbumInformationFetched;
-use App\Events\ArtistInformationFetched;
 use App\Events\LibraryChanged;
-use App\Events\MediaCacheObsolete;
-use App\Events\MediaSyncCompleted;
+use App\Events\MediaScanCompleted;
+use App\Events\MultipleSongsLiked;
+use App\Events\MultipleSongsUnliked;
+use App\Events\NewPlaylistCollaboratorJoined;
+use App\Events\PlaybackStarted;
 use App\Events\SongLikeToggled;
-use App\Events\SongsBatchLiked;
-use App\Events\SongsBatchUnliked;
-use App\Events\SongStartedPlaying;
-use App\Listeners\ClearMediaCache;
-use App\Listeners\DeleteNonExistingRecordsPostSync;
-use App\Listeners\DownloadAlbumCover;
-use App\Listeners\DownloadArtistImage;
+use App\Listeners\DeleteNonExistingRecordsPostScan;
 use App\Listeners\LoveMultipleTracksOnLastfm;
 use App\Listeners\LoveTrackOnLastfm;
+use App\Listeners\MakePlaylistSongsPublic;
 use App\Listeners\PruneLibrary;
 use App\Listeners\UnloveMultipleTracksOnLastfm;
 use App\Listeners\UpdateLastfmNowPlaying;
+use App\Listeners\WriteSyncLog;
 use App\Models\Album;
-use App\Models\Song;
 use App\Observers\AlbumObserver;
-use App\Observers\SongObserver;
-use Illuminate\Foundation\Support\Providers\EventServiceProvider as ServiceProvider;
+use Illuminate\Foundation\Support\Providers\EventServiceProvider as BaseServiceProvider;
 
-class EventServiceProvider extends ServiceProvider
+class EventServiceProvider extends BaseServiceProvider
 {
     protected $listen = [
         SongLikeToggled::class => [
             LoveTrackOnLastfm::class,
         ],
 
-        SongsBatchLiked::class => [
+        MultipleSongsLiked::class => [
             LoveMultipleTracksOnLastfm::class,
         ],
 
-        SongsBatchUnliked::class => [
+        MultipleSongsUnliked::class => [
             UnloveMultipleTracksOnLastfm::class,
         ],
 
-        SongStartedPlaying::class => [
+        PlaybackStarted::class => [
             UpdateLastfmNowPlaying::class,
         ],
 
         LibraryChanged::class => [
             PruneLibrary::class,
-            ClearMediaCache::class,
         ],
 
-        MediaCacheObsolete::class => [
-            ClearMediaCache::class,
+        MediaScanCompleted::class => [
+            DeleteNonExistingRecordsPostScan::class,
+            WriteSyncLog::class,
         ],
 
-        AlbumInformationFetched::class => [
-            DownloadAlbumCover::class,
-        ],
-
-        ArtistInformationFetched::class => [
-            DownloadArtistImage::class,
-        ],
-
-        MediaSyncCompleted::class => [
-            DeleteNonExistingRecordsPostSync::class,
+        NewPlaylistCollaboratorJoined::class => [
+            MakePlaylistSongsPublic::class,
         ],
     ];
 
@@ -71,7 +58,6 @@ class EventServiceProvider extends ServiceProvider
     {
         parent::boot();
 
-        Song::observe(SongObserver::class);
         Album::observe(AlbumObserver::class);
     }
 }

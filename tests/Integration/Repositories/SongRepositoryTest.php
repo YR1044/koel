@@ -4,7 +4,7 @@ namespace Tests\Integration\Repositories;
 
 use App\Models\Song;
 use App\Repositories\SongRepository;
-use App\Services\Helper;
+use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 class SongRepositoryTest extends TestCase
@@ -15,13 +15,14 @@ class SongRepositoryTest extends TestCase
     {
         parent::setUp();
 
-        $this->songRepository = new SongRepository(new Helper());
+        $this->songRepository = app(SongRepository::class);
     }
 
-    public function testGetOneByPath(): void
+    #[Test]
+    public function getOneByPath(): void
     {
         /** @var Song $song */
         $song = Song::factory()->create(['path' => 'foo']);
-        self::assertSame($song->id, $this->songRepository->getOneByPath('foo')->id);
+        self::assertSame($song->id, $this->songRepository->findOneByPath('foo')->id);
     }
 }

@@ -2,89 +2,125 @@
 
 namespace Tests\Integration\Services;
 
+use App\Http\Integrations\Lastfm\Requests\GetAlbumInfoRequest;
+use App\Http\Integrations\Lastfm\Requests\GetArtistInfoRequest;
+use App\Http\Integrations\Lastfm\Requests\ScrobbleRequest;
+use App\Http\Integrations\Lastfm\Requests\ToggleLoveTrackRequest;
+use App\Http\Integrations\Lastfm\Requests\UpdateNowPlayingRequest;
 use App\Models\Album;
 use App\Models\Artist;
+use App\Models\Song;
 use App\Services\LastfmService;
-use GuzzleHttp\Client;
-use GuzzleHttp\Psr7\Response;
-use Illuminate\Contracts\Cache\Repository as Cache;
-use Illuminate\Log\Logger;
-use Mockery;
+use Illuminate\Support\Facades\File;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Test;
+use Saloon\Http\Faking\MockResponse;
+use Saloon\Laravel\Saloon;
 use Tests\TestCase;
+
+use function Tests\create_user;
+use function Tests\test_path;
 
 class LastfmServiceTest extends TestCase
 {
-    public function testGetArtistInformation(): void
-    {
-        /** @var Artist $artist */
-        $artist = Artist::factory()->make(['name' => 'foo']);
+    private LastfmService $service;
 
-        /** @var Client $client */
-        $client = Mockery::mock(Client::class, [
-            'get' => new Response(200, [], file_get_contents(__DIR__ . '../../../blobs/lastfm/artist.json')),
+    public function setUp(): void
+    {
+        parent::setUp();
+
+        config([
+            'koel.lastfm.key' => 'key',
+            'koel.lastfm.secret' => 'secret',
         ]);
 
-        $api = new LastfmService($client, app(Cache::class), app(Logger::class));
-        $info = $api->getArtistInformation($artist->name);
+        $this->service = app(LastfmService::class);
+    }
+
+    #[Test]
+    public function getArtistInformation(): void
+    {
+        /** @var Artist $artist */
+        $artist = Artist::factory()->make(['name' => 'Kamelot']);
+
+        Saloon::fake([
+            GetArtistInfoRequest::class => MockResponse::make(body: File::get(test_path('blobs/lastfm/artist.json'))),
+        ]);
+
+        $info = $this->service->getArtistInformation($artist);
+
+        Saloon::assertSent(static function (GetArtistInfoRequest $request): bool {
+            self::assertSame([
+                'method' => 'artist.getInfo',
+                'artist' => 'Kamelot',
+                'autocorrect' => 1,
+                'format' => 'json',
+            ], $request->query()->all());
+
+            return true;
+        });
 
         self::assertEquals([
             'url' => 'https://www.last.fm/music/Kamelot',
-            'image' => 'http://foo.bar/extralarge.jpg',
+            'image' => null,
             'bio' => [
                 'summary' => 'Quisque ut nisi.',
                 'full' => 'Quisque ut nisi. Vestibulum ullamcorper mauris at ligula.',
             ],
-        ], $info);
-
-        self::assertNotNull(cache()->get('0aff3bc1259154f0e9db860026cda7a6'));
+        ], $info->toArray());
     }
 
-    public function testGetArtistInformationForNonExistentArtist(): void
+    #[Test]
+    public function getArtistInformationForNonExistentArtist(): void
     {
         /** @var Artist $artist */
-        $artist = Artist::factory()->make();
+        $artist = Artist::factory()->make(['name' => 'bar']);
 
-        /** @var Client $client */
-        $client = Mockery::mock(Client::class, [
-            'get' => new Response(400, [], file_get_contents(__DIR__ . '../../../blobs/lastfm/artist-notfound.json')),
+        Saloon::fake([
+            GetArtistInfoRequest::class => MockResponse::make(
+                body: File::get(test_path('blobs/lastfm/artist-notfound.json'))
+            ),
         ]);
 
-        $api = new LastfmService($client, app(Cache::class), app(Logger::class));
-
-        self::assertNull($api->getArtistInformation($artist->name));
+        self::assertNull($this->service->getArtistInformation($artist));
     }
 
-    public function testGetAlbumInformation(): void
+    #[Test]
+    public function getAlbumInformation(): void
     {
-        /** @var Artist $artist */
-        $artist = Artist::factory()->create(['name' => 'bar']);
-
         /** @var Album $album */
-        $album = Album::factory()->create([
-            'artist_id' => $artist->id,
-            'name' => 'foo',
+        $album = Album::factory()->for(Artist::factory()->create(['name' => 'Kamelot']))->create(['name' => 'Epica']);
+
+        Saloon::fake([
+            GetAlbumInfoRequest::class => MockResponse::make(body: File::get(test_path('blobs/lastfm/album.json'))),
         ]);
 
-        /** @var Client $client */
-        $client = Mockery::mock(Client::class, [
-            'get' => new Response(200, [], file_get_contents(__DIR__ . '../../../blobs/lastfm/album.json')),
-        ]);
+        $info = $this->service->getAlbumInformation($album);
 
-        $api = new LastfmService($client, app(Cache::class), app(Logger::class));
-        $info = $api->getAlbumInformation($album->name, $album->artist->name);
+        Saloon::assertSent(static function (GetAlbumInfoRequest $request): bool {
+            self::assertSame([
+                'method' => 'album.getInfo',
+                'artist' => 'Kamelot',
+                'album' => 'Epica',
+                'autocorrect' => 1,
+                'format' => 'json',
+            ], $request->query()->all());
+
+            return true;
+        });
 
         self::assertEquals([
             'url' => 'https://www.last.fm/music/Kamelot/Epica',
-            'image' => 'http://foo.bar/extralarge.jpg',
+            'cover' => null,
             'tracks' => [
                 [
                     'title' => 'Track 1',
-                    'url' => 'http://foo/track1',
+                    'url' => 'https://foo/track1',
                     'length' => 100,
                 ],
                 [
                     'title' => 'Track 2',
-                    'url' => 'http://foo/track2',
+                    'url' => 'https://foo/track2',
                     'length' => 150,
                 ],
             ],
@@ -92,23 +128,116 @@ class LastfmServiceTest extends TestCase
                 'summary' => 'Quisque ut nisi.',
                 'full' => 'Quisque ut nisi. Vestibulum ullamcorper mauris at ligula.',
             ],
-        ], $info);
-
-        self::assertNotNull(cache()->get('fca889d13b3222589d7d020669cc5a38'));
+        ], $info->toArray());
     }
 
-    public function testGetAlbumInformationForNonExistentAlbum(): void
+    #[Test]
+    public function getAlbumInformationForNonExistentAlbum(): void
     {
         /** @var Album $album */
-        $album = Album::factory()->create();
+        $album = Album::factory()->for(Artist::factory()->create(['name' => 'Kamelot']))->create(['name' => 'Foo']);
 
-        /** @var Client $client */
-        $client = Mockery::mock(Client::class, [
-            'get' => new Response(400, [], file_get_contents(__DIR__ . '../../../blobs/lastfm/album-notfound.json')),
+        Saloon::fake([
+            GetAlbumInfoRequest::class => MockResponse::make(
+                body: File::get(test_path('blobs/lastfm/album-notfound.json'))
+            ),
         ]);
 
-        $api = new LastfmService($client, app(Cache::class), app(Logger::class));
+        self::assertNull($this->service->getAlbumInformation($album));
+    }
 
-        self::assertNull($api->getAlbumInformation($album->name, $album->artist->name));
+    #[Test]
+    public function scrobble(): void
+    {
+        $user = create_user([
+            'preferences' => [
+                'lastfm_session_key' => 'my_key',
+            ],
+        ]);
+
+        /** @var Song $song */
+        $song = Song::factory()->create();
+
+        Saloon::fake([ScrobbleRequest::class => MockResponse::make()]);
+
+        $this->service->scrobble($song, $user, 100);
+
+        Saloon::assertSent(static function (ScrobbleRequest $request) use ($song): bool {
+            self::assertSame([
+                'method' => 'track.scrobble',
+                'artist' => $song->artist->name,
+                'track' => $song->title,
+                'timestamp' => 100,
+                'sk' => 'my_key',
+                'album' => $song->album->name,
+            ], $request->body()->all());
+
+            return true;
+        });
+    }
+
+    /** @return array<mixed> */
+    public static function provideToggleLoveTrackData(): array
+    {
+        return [[true, 'track.love'], [false, 'track.unlove']];
+    }
+
+    #[DataProvider('provideToggleLoveTrackData')]
+    #[Test]
+    public function toggleLoveTrack(bool $love, string $method): void
+    {
+        $user = create_user([
+            'preferences' => [
+                'lastfm_session_key' => 'my_key',
+            ],
+        ]);
+
+        /** @var Song $song */
+        $song = Song::factory()->create();
+
+        Saloon::fake([ToggleLoveTrackRequest::class => MockResponse::make()]);
+
+        $this->service->toggleLoveTrack($song, $user, $love);
+
+        Saloon::assertSent(static function (ToggleLoveTrackRequest $request) use ($song, $love): bool {
+            self::assertSame([
+                'method' => $love ? 'track.love' : 'track.unlove',
+                'sk' => 'my_key',
+                'artist' => $song->artist->name,
+                'track' => $song->title,
+            ], $request->body()->all());
+
+            return true;
+        });
+    }
+
+    #[Test]
+    public function updateNowPlaying(): void
+    {
+        $user = create_user([
+            'preferences' => [
+                'lastfm_session_key' => 'my_key',
+            ],
+        ]);
+
+        /** @var Song $song */
+        $song = Song::factory()->for(Artist::factory()->create(['name' => 'foo']))->create(['title' => 'bar']);
+
+        Saloon::fake([UpdateNowPlayingRequest::class => MockResponse::make()]);
+
+        $this->service->updateNowPlaying($song, $user);
+
+        Saloon::assertSent(static function (UpdateNowPlayingRequest $request) use ($song): bool {
+            self::assertSame([
+                'method' => 'track.updateNowPlaying',
+                'artist' => $song->artist->name,
+                'track' => $song->title,
+                'duration' => $song->length,
+                'sk' => 'my_key',
+                'album' => $song->album->name,
+            ], $request->body()->all());
+
+            return true;
+        });
     }
 }

@@ -2,59 +2,79 @@
 
 namespace App\Services;
 
+use App\Builders\SongBuilder;
 use App\Models\Album;
 use App\Models\Artist;
+use App\Models\Podcast;
 use App\Models\Song;
+use App\Models\User;
 use App\Repositories\AlbumRepository;
 use App\Repositories\ArtistRepository;
+use App\Repositories\PodcastRepository;
+use App\Repositories\Repository;
 use App\Repositories\SongRepository;
-use Illuminate\Database\Eloquent\Model;
+use App\Values\ExcerptSearchResult;
 use Illuminate\Support\Collection;
-use Laravel\Scout\Builder;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 class SearchService
 {
     public const DEFAULT_EXCERPT_RESULT_COUNT = 6;
-
-    private SongRepository $songRepository;
-    private AlbumRepository $albumRepository;
-    private ArtistRepository $artistRepository;
+    public const DEFAULT_MAX_SONG_RESULT_COUNT = 500;
 
     public function __construct(
-        SongRepository $songRepository,
-        AlbumRepository $albumRepository,
-        ArtistRepository $artistRepository
+        private readonly SongRepository $songRepository,
+        private readonly AlbumRepository $albumRepository,
+        private readonly ArtistRepository $artistRepository,
+        private readonly PodcastRepository $podcastRepository
     ) {
-        $this->songRepository = $songRepository;
-        $this->albumRepository = $albumRepository;
-        $this->artistRepository = $artistRepository;
     }
 
-    /** @return array<mixed> */
-    public function excerptSearch(string $keywords, int $count): array
-    {
-        return [
-            'songs' => self::getTopResults($this->songRepository->search($keywords), $count)
-                ->map(static fn (Song $song): string => $song->id),
-            'artists' => self::getTopResults($this->artistRepository->search($keywords), $count)
-                ->map(static fn (Artist $artist): int => $artist->id),
-            'albums' => self::getTopResults($this->albumRepository->search($keywords), $count)
-                ->map(static fn (Album $album): int => $album->id),
-        ];
+    public function excerptSearch(
+        string $keywords,
+        int $count = self::DEFAULT_EXCERPT_RESULT_COUNT
+    ): ExcerptSearchResult {
+        return ExcerptSearchResult::make(
+            self::excerptScoutSearch($keywords, $count, $this->songRepository),
+            self::excerptScoutSearch($keywords, $count, $this->artistRepository),
+            self::excerptScoutSearch($keywords, $count, $this->albumRepository),
+            self::excerptScoutSearch($keywords, $count, $this->podcastRepository),
+        );
     }
 
-    /** @return Collection|array<Model> */
-    private static function getTopResults(Builder $query, int $count): Collection
+    /**
+     * @param SongRepository|AlbumRepository|ArtistRepository|PodcastRepository $repository
+     *
+     * @return Collection|array<array-key, Song|Artist|Album|Podcast>
+     */
+    private static function excerptScoutSearch(string $keywords, int $count, Repository $repository): Collection
     {
-        return $query->take($count)->get();
+        try {
+            return $repository->getMany(
+                ids: $repository->modelClass::search($keywords)->get()->take($count)->modelKeys(), // @phpstan-ignore-line
+                preserveOrder: true,
+            );
+        } catch (Throwable $e) {
+            Log::error('Scout search failed', ['exception' => $e]);
+
+            return new Collection();
+        }
     }
 
-    /** @return Collection|array<string> */
-    public function searchSongs(string $keywords): Collection
-    {
-        return $this->songRepository
-            ->search($keywords)
-            ->get()
-            ->map(static fn (Song $song): string => $song->id);
+    /** @return Collection|array<array-key, Song> */
+    public function searchSongs(
+        string $keywords,
+        ?User $scopedUser = null,
+        int $limit = self::DEFAULT_MAX_SONG_RESULT_COUNT
+    ): Collection {
+        return Song::search($keywords)
+            ->query(
+                static fn (SongBuilder $builder) => $builder
+                    ->forUser($scopedUser ?? auth()->user())
+                    ->withMeta()
+                    ->limit($limit)
+            )
+            ->get();
     }
 }

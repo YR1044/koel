@@ -2,351 +2,265 @@
 
 namespace Tests\Feature;
 
-use App\Events\LibraryChanged;
+use App\Http\Resources\SongResource;
 use App\Models\Album;
 use App\Models\Artist;
 use App\Models\Song;
-use App\Models\User;
 use Illuminate\Support\Collection;
+use PHPUnit\Framework\Attributes\Test;
+use Tests\TestCase;
+
+use function Tests\create_admin;
 
 class SongTest extends TestCase
 {
-    public function setUp(): void
+    #[Test]
+    public function index(): void
     {
-        parent::setUp();
+        Song::factory(10)->create();
 
-        static::createSampleMediaSet();
+        $this->getAs('api/songs')->assertJsonStructure(SongResource::PAGINATION_JSON_STRUCTURE);
+        $this->getAs('api/songs?sort=title&order=desc')->assertJsonStructure(SongResource::PAGINATION_JSON_STRUCTURE);
     }
 
-    public function testSingleUpdateAllInfoNoCompilation(): void
+    #[Test]
+    public function show(): void
     {
-        $this->expectsEvents(LibraryChanged::class);
-
         /** @var Song $song */
-        $song = Song::orderBy('id', 'desc')->first();
+        $song = Song::factory()->create();
 
-        /** @var User $user */
-        $user = User::factory()->admin()->create();
+        $this->getAs('api/songs/' . $song->id)->assertJsonStructure(SongResource::JSON_STRUCTURE);
+    }
 
-        $this->putAsUser('/api/songs', [
+    #[Test]
+    public function destroy(): void
+    {
+        $songs = Song::factory(3)->create();
+
+        $this->deleteAs('api/songs', ['songs' => $songs->modelKeys()], create_admin())
+            ->assertNoContent();
+
+        $songs->each(fn (Song $song) => $this->assertModelMissing($song));
+    }
+
+    #[Test]
+    public function unauthorizedDelete(): void
+    {
+        $songs = Song::factory(3)->create();
+
+        $this->deleteAs('api/songs', ['songs' => $songs->modelKeys()])
+            ->assertForbidden();
+
+        $songs->each(fn (Song $song) => $this->assertModelExists($song));
+    }
+
+    #[Test]
+    public function singleUpdateAllInfoNoCompilation(): void
+    {
+        /** @var Song $song */
+        $song = Song::factory()->create();
+
+        $this->putAs('/api/songs', [
             'songs' => [$song->id],
             'data' => [
                 'title' => 'Foo Bar',
-                'artistName' => 'John Cena',
-                'albumName' => 'One by One',
+                'artist_name' => 'John Cena',
+                'album_name' => 'One by One',
                 'lyrics' => 'Lorem ipsum dolor sic amet.',
                 'track' => 1,
-                'compilationState' => 0,
+                'disc' => 2,
             ],
-        ], $user)
-            ->assertStatus(200);
+        ], create_admin())
+            ->assertOk();
 
         /** @var Artist $artist */
-        $artist = Artist::where('name', 'John Cena')->first();
+        $artist = Artist::query()->where('name', 'John Cena')->first();
         self::assertNotNull($artist);
 
         /** @var Album $album */
-        $album = Album::where('name', 'One by One')->first();
+        $album = Album::query()->where('name', 'One by One')->first();
         self::assertNotNull($album);
 
-        self::assertDatabaseHas('songs', [
+        self::assertDatabaseHas(Song::class, [
             'id' => $song->id,
             'album_id' => $album->id,
             'lyrics' => 'Lorem ipsum dolor sic amet.',
             'track' => 1,
+            'disc' => 2,
         ]);
     }
 
-    public function testSingleUpdateSomeInfoNoCompilation(): void
+    #[Test]
+    public function singleUpdateSomeInfoNoCompilation(): void
     {
         /** @var Song $song */
-        $song = Song::orderBy('id', 'desc')->first();
-        $originalArtistId = $song->album->artist->id;
+        $song = Song::factory()->create();
 
-        /** @var User $user */
-        $user = User::factory()->admin()->create();
+        $originalArtistId = $song->artist->id;
 
-        $this->putAsUser('/api/songs', [
+        $this->putAs('/api/songs', [
             'songs' => [$song->id],
             'data' => [
                 'title' => '',
-                'artistName' => '',
-                'albumName' => 'One by One',
+                'artist_name' => '',
+                'album_name' => 'One by One',
                 'lyrics' => 'Lorem ipsum dolor sic amet.',
                 'track' => 1,
-                'compilationState' => 0,
             ],
-        ], $user)
-            ->assertStatus(200);
+        ], create_admin())
+            ->assertOk();
 
         // We don't expect the song's artist to change
-        self::assertEquals($originalArtistId, Song::find($song->id)->album->artist->id);
+        self::assertSame($originalArtistId, $song->refresh()->artist->id);
 
         // But we expect a new album to be created for this artist and contain this song
-        self::assertEquals('One by One', Song::find($song->id)->album->name);
+        self::assertSame('One by One', $song->album->name);
     }
 
-    public function testMultipleUpdateAllInfoNoCompilation(): void
+    #[Test]
+    public function multipleUpdateNoCompilation(): void
     {
-        $songIds = Song::orderBy('id', 'desc')->take(3)->pluck('id')->toArray();
+        $songIds = Song::factory(3)->create()->modelKeys();
 
-        $user = User::factory()->admin()->create();
-        $this->putAsUser('/api/songs', [
+        $this->putAs('/api/songs', [
             'songs' => $songIds,
             'data' => [
-                'title' => 'foo',
-                'artistName' => 'John Cena',
-                'albumName' => 'One by One',
-                'lyrics' => 'bar',
+                'title' => null,
+                'artist_name' => 'John Cena',
+                'album_name' => 'One by One',
+                'lyrics' => null,
                 'track' => 9999,
-                'compilationState' => 0,
             ],
-        ], $user)
-            ->assertStatus(200);
+        ], create_admin())
+            ->assertOk();
 
-        /** @var array<Song>|Collection $songs */
-        $songs = Song::orderBy('id', 'desc')->take(3)->get();
+        /** @var Collection<array-key, Song> $songs */
+        $songs = Song::query()->whereIn('id', $songIds)->get();
 
-        // Even though we post the title, lyrics, and tracks, we don't expect them to take any effect
-        // because we're updating multiple songs here.
-        self::assertNotEquals('foo', $songs[0]->title);
-        self::assertNotEquals('bar', $songs[2]->lyrics);
-        self::assertNotEquals(9999, $songs[2]->track);
+        // All of these songs must now belong to a new album and artist set
+        self::assertSame('One by One', $songs[0]->album->name);
+        self::assertSame($songs[0]->album_id, $songs[1]->album_id);
+        self::assertSame($songs[0]->album_id, $songs[2]->album_id);
 
-        // But all of these songs must now belong to a new album and artist set
-        self::assertEquals('One by One', $songs[0]->album->name);
-        self::assertEquals('One by One', $songs[1]->album->name);
-        self::assertEquals('One by One', $songs[2]->album->name);
+        self::assertSame('John Cena', $songs[0]->artist->name);
+        self::assertSame($songs[0]->artist_id, $songs[1]->artist_id);
+        self::assertSame($songs[0]->artist_id, $songs[2]->artist_id);
 
-        self::assertEquals('John Cena', $songs[0]->album->artist->name);
-        self::assertEquals('John Cena', $songs[1]->album->artist->name);
-        self::assertEquals('John Cena', $songs[2]->album->artist->name);
+        self::assertNotSame($songs[0]->title, $songs[1]->title);
+        self::assertNotSame($songs[0]->lyrics, $songs[1]->lyrics);
+
+        self::assertSame(9999, $songs[0]->track);
+        self::assertSame(9999, $songs[1]->track);
+        self::assertSame(9999, $songs[2]->track);
     }
 
-    public function testMultipleUpdateSomeInfoNoCompilation(): void
+    #[Test]
+    public function multipleUpdateCreatingNewAlbumsAndArtists(): void
     {
-        /** @var array<Song>|Collection $originalSongs */
-        $originalSongs = Song::orderBy('id', 'desc')->take(3)->get();
-        $songIds = $originalSongs->pluck('id')->toArray();
+        $originalSongs = Song::factory(3)->create();
+        $originalSongIds = $originalSongs->modelKeys();
+        $originalAlbumNames = $originalSongs->pluck('album.name')->all();
+        $originalAlbumIds = $originalSongs->pluck('album_id')->all();
 
-        $user = User::factory()->admin()->create();
-        $this->putAsUser('/api/songs', [
-            'songs' => $songIds,
+        $this->putAs('/api/songs', [
+            'songs' =>  $originalSongIds,
             'data' => [
                 'title' => 'Foo Bar',
-                'artistName' => 'John Cena',
-                'albumName' => '',
+                'artist_name' => 'John Cena',
+                'album_name' => '',
                 'lyrics' => 'Lorem ipsum dolor sic amet.',
                 'track' => 1,
-                'compilationState' => 0,
             ],
-        ], $user)
-            ->assertStatus(200);
+        ], create_admin())
+            ->assertOk();
 
-        /** @var array<Song>|Collection $songs */
-        $songs = Song::orderBy('id', 'desc')->take(3)->get();
+        $songs = Song::query()->whereIn('id', $originalSongIds)->get()->orderByArray($originalSongIds);
 
         // Even though the album name doesn't change, a new artist should have been created
         // and thus, a new album with the same name was created as well.
-        self::assertEquals($songs[0]->album->name, $originalSongs[0]->album->name);
-        self::assertNotEquals($songs[0]->album->id, $originalSongs[0]->album->id);
-        self::assertEquals($songs[1]->album->name, $originalSongs[1]->album->name);
-        self::assertNotEquals($songs[1]->album->id, $originalSongs[1]->album->id);
-        self::assertEquals($songs[2]->album->name, $originalSongs[2]->album->name);
-        self::assertNotEquals($songs[2]->album->id, $originalSongs[2]->album->id);
+        collect([0, 1, 2])->each(static function (int $i) use ($songs, $originalAlbumNames, $originalAlbumIds): void {
+            self::assertSame($songs[$i]->album->name, $originalAlbumNames[$i]);
+            self::assertNotSame($songs[$i]->album_id, $originalAlbumIds[$i]);
+        });
 
         // And of course, the new artist is...
-        self::assertEquals('John Cena', $songs[0]->album->artist->name); // JOHN CENA!!!
-        self::assertEquals('John Cena', $songs[1]->album->artist->name); // JOHN CENA!!!
-        self::assertEquals('John Cena', $songs[2]->album->artist->name); // And... JOHN CENAAAAAAAAAAA!!!
+        self::assertSame('John Cena', $songs[0]->artist->name); // JOHN CENA!!!
+        self::assertSame('John Cena', $songs[1]->artist->name); // JOHN CENA!!!
+        self::assertSame('John Cena', $songs[2]->artist->name); // And... JOHN CENAAAAAAAAAAA!!!
     }
 
-    public function testSingleUpdateAllInfoYesCompilation(): void
+    #[Test]
+    public function singleUpdateAllInfoWithCompilation(): void
     {
         /** @var Song $song */
-        $song = Song::orderBy('id', 'desc')->first();
+        $song = Song::factory()->create();
 
-        /** @var User $user */
-        $user = User::factory()->admin()->create();
-
-        $this->putAsUser('/api/songs', [
+        $this->putAs('/api/songs', [
             'songs' => [$song->id],
             'data' => [
                 'title' => 'Foo Bar',
-                'artistName' => 'John Cena',
-                'albumName' => 'One by One',
+                'artist_name' => 'John Cena',
+                'album_name' => 'One by One',
+                'album_artist_name' => 'John Lennon',
                 'lyrics' => 'Lorem ipsum dolor sic amet.',
                 'track' => 1,
-                'compilationState' => 1,
+                'disc' => 2,
             ],
-        ], $user)
-            ->assertStatus(200);
+        ], create_admin())
+            ->assertOk();
 
-        /** @var Album $compilationAlbum */
-        $compilationAlbum = Album::whereArtistIdAndName(Artist::VARIOUS_ID, 'One by One')->first();
-        self::assertNotNull($compilationAlbum);
+        /** @var Album $album */
+        $album = Album::query()->where('name', 'One by One')->first();
+
+        /** @var Artist $albumArtist */
+        $albumArtist = Artist::query()->where('name', 'John Lennon')->first();
 
         /** @var Artist $artist */
-        $artist = Artist::whereName('John Cena')->first();
-        self::assertNotNull($artist);
+        $artist = Artist::query()->where('name', 'John Cena')->first();
 
-        self::assertDatabaseHas('songs', [
+        self::assertDatabaseHas(Song::class, [
             'id' => $song->id,
             'artist_id' => $artist->id,
-            'album_id' => $compilationAlbum->id,
+            'album_id' => $album->id,
             'lyrics' => 'Lorem ipsum dolor sic amet.',
             'track' => 1,
+            'disc' => 2,
         ]);
 
-        // Now try changing stuff and make sure things work.
-        // Case 1: Keep compilation state and artist the same
-        $this->putAsUser('/api/songs', [
-            'songs' => [$song->id],
-            'data' => [
-                'title' => 'Barz Qux',
-                'artistName' => 'John Cena',
-                'albumName' => 'Two by Two',
-                'lyrics' => 'Lorem ipsum dolor sic amet.',
-                'track' => 1,
-                'compilationState' => 2,
-            ],
-        ], $user)
-            ->assertStatus(200);
-
-        /** @var Album $compilationAlbum */
-        $compilationAlbum = Album::where([
-            'artist_id' => Artist::VARIOUS_ID,
-            'name' => 'Two by Two',
-        ])->first();
-
-        self::assertNotNull($compilationAlbum);
-
-        /** @var Artist $contributingArtist */
-        $contributingArtist = Artist::where('name', 'John Cena')->first();
-        self::assertNotNull($contributingArtist);
-
-        self::assertDatabaseHas('songs', [
-            'id' => $song->id,
-            'artist_id' => $contributingArtist->id,
-            'album_id' => $compilationAlbum->id,
-        ]);
-
-        // Case 2: Keep compilation state, but change the artist.
-        $this->putAsUser('/api/songs', [
-            'songs' => [$song->id],
-            'data' => [
-                'title' => 'Barz Qux',
-                'artistName' => 'Foo Fighters',
-                'albumName' => 'One by One',
-                'lyrics' => 'Lorem ipsum dolor sic amet.',
-                'track' => 1,
-                'compilationState' => 2,
-            ],
-        ], $user)
-            ->assertStatus(200);
-
-        /** @var Album $compilationAlbum */
-        $compilationAlbum = Album::where([
-            'artist_id' => Artist::VARIOUS_ID,
-            'name' => 'One by One',
-        ])->first();
-
-        self::assertNotNull($compilationAlbum);
-
-        /** @var Artist $contributingArtist */
-        $contributingArtist = Artist::where('name', 'Foo Fighters')->first();
-        self::assertNotNull($contributingArtist);
-
-        self::assertDatabaseHas('songs', [
-            'id' => $song->id,
-            'artist_id' => $contributingArtist->id,
-            'album_id' => $compilationAlbum->id,
-        ]);
-
-        // Case 3: Change compilation state only
-        $this->putAsUser('/api/songs', [
-            'songs' => [$song->id],
-            'data' => [
-                'title' => 'Barz Qux',
-                'artistName' => 'Foo Fighters',
-                'albumName' => 'One by One',
-                'lyrics' => 'Lorem ipsum dolor sic amet.',
-                'track' => 1,
-                'compilationState' => 0,
-            ],
-        ], $user)
-            ->assertStatus(200);
-
-        /** @var Artist $artist */
-        $artist = Artist::where('name', 'Foo Fighters')->first();
-        self::assertNotNull($artist);
-
-        /** @var Album $album */
-        $album = Album::where([
-            'artist_id' => $artist->id,
-            'name' => 'One by One',
-        ])->first();
-
-        self::assertNotNull($album);
-
-        self::assertDatabaseHas('songs', [
-            'id' => $song->id,
-            'artist_id' => $artist->id,
-            'album_id' => $album->id,
-        ]);
-
-        // Case 3: Change compilation state and artist
-        // Remember to set the compilation state back to 1
-        $this->putAsUser('/api/songs', [
-            'songs' => [$song->id],
-            'data' => [
-                'title' => 'Barz Qux',
-                'artistName' => 'Foo Fighters',
-                'albumName' => 'One by One',
-                'lyrics' => 'Lorem ipsum dolor sic amet.',
-                'track' => 1,
-                'compilationState' => 1,
-            ],
-        ], $user);
-
-        $this->putAsUser('/api/songs', [
-            'songs' => [$song->id],
-            'data' => [
-                'title' => 'Twilight of the Thunder God',
-                'artistName' => 'Amon Amarth',
-                'albumName' => 'Twilight of the Thunder God',
-                'lyrics' => 'Thor! Nanananananana Batman.',
-                'track' => 1,
-                'compilationState' => 0,
-            ],
-        ], $user)
-            ->assertStatus(200);
-
-        /** @var Artist $artist */
-        $artist = Artist::where('name', 'Amon Amarth')->first();
-        self::assertNotNull($artist);
-
-        /** @var Album $album */
-        $album = Album::where([
-            'artist_id' => $artist->id,
-            'name' => 'Twilight of the Thunder God',
-        ])->first();
-
-        self::assertNotNull($album);
-
-        self::assertDatabaseHas('songs', [
-            'id' => $song->id,
-            'artist_id' => $artist->id,
-            'album_id' => $album->id,
-            'lyrics' => 'Thor! Nanananananana Batman.', // haha
-        ]);
+        self::assertTrue($album->artist->is($albumArtist));
     }
 
-    public function testDeletingByChunk(): void
+    #[Test]
+    public function updateSingleSongWithEmptyTrackAndDisc(): void
     {
-        self::assertNotEquals(0, Song::count());
-        $ids = Song::select('id')->get()->pluck('id')->all();
-        Song::deleteByChunk($ids, 'id', 1);
-        self::assertEquals(0, Song::count());
+        /** @var Song $song */
+        $song = Song::factory()->create([
+            'track' => 12,
+            'disc' => 2,
+        ]);
+
+        $this->putAs('/api/songs', [
+            'songs' => [$song->id],
+            'data' => [
+                'track' => null,
+                'disc' => null,
+            ],
+        ], create_admin())
+            ->assertOk();
+
+        $song->refresh();
+
+        self::assertSame(0, $song->track);
+        self::assertSame(1, $song->disc);
+    }
+
+    #[Test]
+    public function deletingByChunk(): void
+    {
+        Song::factory(5)->create();
+
+        Song::deleteByChunk(Song::query()->get()->modelKeys(), 1);
+
+        self::assertSame(0, Song::query()->count());
     }
 }

@@ -2,29 +2,55 @@
 
 namespace Tests\Integration\Services;
 
+use App\Http\Integrations\YouTube\Requests\SearchVideosRequest;
+use App\Models\Artist;
+use App\Models\Song;
 use App\Services\YouTubeService;
-use GuzzleHttp\Client;
-use GuzzleHttp\Psr7\Response;
-use Illuminate\Contracts\Cache\Repository;
-use Illuminate\Log\Logger;
-use Mockery;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\File;
+use PHPUnit\Framework\Attributes\Test;
+use Saloon\Http\Faking\MockResponse;
+use Saloon\Laravel\Saloon;
 use Tests\TestCase;
+
+use function Tests\test_path;
 
 class YouTubeServiceTest extends TestCase
 {
-    public function testSearch(): void
-    {
-        $this->withoutEvents();
+    private YouTubeService $service;
 
-        /** @var Client $client */
-        $client = Mockery::mock(Client::class, [
-            'get' => new Response(200, [], file_get_contents(__DIR__ . '../../../blobs/youtube/search.json')),
+    public function setUp(): void
+    {
+        parent::setUp();
+
+        $this->service = app(YouTubeService::class);
+    }
+
+    #[Test]
+    public function searchVideosRelatedToSong(): void
+    {
+        /** @var Song $song */
+        $song = Song::factory()->for(Artist::factory()->create(['name' => 'Slipknot']))->create(['title' => 'Snuff']);
+
+        Saloon::fake([
+            SearchVideosRequest::class => MockResponse::make(body: File::get(test_path('blobs/youtube/search.json'))),
         ]);
 
-        $api = new YouTubeService($client, app(Repository::class), app(Logger::class));
-        $response = $api->search('Lorem Ipsum');
+        $response = $this->service->searchVideosRelatedToSong($song, 'my-token');
 
-        self::assertEquals('Slipknot - Snuff [OFFICIAL VIDEO]', $response->items[0]->snippet->title);
-        self::assertNotNull(cache()->get('1492972ec5c8e6b3a9323ba719655ddb'));
+        self::assertSame('Slipknot - Snuff [OFFICIAL VIDEO]', $response->items[0]->snippet->title);
+        self::assertNotNull(Cache::get('youtube.cce909a3df066c88c2666d4283697867'));
+
+        Saloon::assertSent(static function (SearchVideosRequest $request): bool {
+            self::assertSame([
+                'part' => 'snippet',
+                'type' => 'video',
+                'maxResults' => 10,
+                'pageToken' => 'my-token',
+                'q' => 'Snuff Slipknot',
+            ], $request->query()->all());
+
+            return true;
+        });
     }
 }

@@ -2,27 +2,30 @@
 
 namespace App\Http\Controllers\API;
 
+use App\Http\Controllers\Controller;
 use App\Http\Requests\API\SettingRequest;
 use App\Models\Setting;
-use App\Services\MediaSyncService;
+use App\Models\User;
+use App\Services\MediaScanner;
+use App\Values\ScanConfiguration;
+use Illuminate\Contracts\Auth\Authenticatable;
 
 class SettingController extends Controller
 {
-    private MediaSyncService $mediaSyncService;
-
-    public function __construct(MediaSyncService $mediaSyncService)
-    {
-        $this->mediaSyncService = $mediaSyncService;
+    /** @param User $user */
+    public function __construct(
+        private readonly MediaScanner $mediaSyncService,
+        private readonly ?Authenticatable $user
+    ) {
     }
 
-    // @TODO: This should be a PUT request
-    public function store(SettingRequest $request)
+    public function update(SettingRequest $request)
     {
+        $this->authorize('admin', User::class);
+
         Setting::set('media_path', rtrim(trim($request->media_path), '/'));
 
-        // In a next version we should opt for a "MediaPathChanged" event,
-        // but let's just do this async now.
-        $this->mediaSyncService->sync();
+        $this->mediaSyncService->scan(ScanConfiguration::make(owner: $this->user, makePublic: true));
 
         return response()->noContent();
     }

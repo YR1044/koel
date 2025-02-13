@@ -11,12 +11,9 @@ class AlbumTableSeeder extends Seeder
 {
     public function run(): void
     {
-        Album::firstOrCreate([
-            'id' => Album::UNKNOWN_ID,
-        ], [
+        Album::query()->firstOrCreate(['id' => Album::UNKNOWN_ID], [
             'artist_id' => Artist::UNKNOWN_ID,
             'name' => Album::UNKNOWN_NAME,
-            'cover' => Album::UNKNOWN_COVER,
         ]);
 
         self::maybeResetPgsqlSerialValue();

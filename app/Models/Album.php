@@ -2,64 +2,72 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Builder;
+use App\Builders\AlbumBuilder;
+use App\Models\Concerns\SupportsDeleteWhereValueNotIn;
+use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\File;
 use Laravel\Scout\Searchable;
 
 /**
- * @property string $cover The album cover's file name
+ * @property string $cover The album cover's URL
  * @property string|null $cover_path The absolute path to the cover file
  * @property bool $has_cover If the album has a non-default cover image
- * @property int $id
  * @property string $name Name of the album
- * @property bool $is_compilation If the album is a compilation from multiple artists
  * @property Artist $artist The album's artist
  * @property int $artist_id
- * @property Collection $songs
+ * @property Collection<array-key, Song> $songs
  * @property bool $is_unknown If the album is the Unknown Album
  * @property string|null $thumbnail_name The file name of the album's thumbnail
  * @property string|null $thumbnail_path The full path to the thumbnail.
  *                                       Notice that this doesn't guarantee the thumbnail exists.
  * @property string|null $thumbnail The public URL to the album's thumbnail
- *
- * @method static self firstOrCreate(array $where, array $params = [])
- * @method static self|null find(int $id)
- * @method static Builder where(...$params)
- * @method static self first()
- * @method static Builder whereArtistIdAndName(int $id, string $name)
- * @method static orderBy(...$params)
+ * @property Carbon $created_at
+ * @property float|string $length Total length of the album in seconds (dynamically calculated)
+ * @property int|string $play_count Total number of times the album's songs have been played (dynamically calculated)
+ * @property int|string $song_count Total number of songs on the album (dynamically calculated)
  */
 class Album extends Model
 {
     use HasFactory;
     use Searchable;
-    use SupportsDeleteWhereIDsNotIn;
+    use SupportsDeleteWhereValueNotIn;
 
     public const UNKNOWN_ID = 1;
     public const UNKNOWN_NAME = 'Unknown Album';
-    public const UNKNOWN_COVER = 'unknown-album.png';
 
     protected $guarded = ['id'];
     protected $hidden = ['updated_at'];
     protected $casts = ['artist_id' => 'integer'];
+
+    protected $with = ['artist'];
+
+    /** @deprecated */
     protected $appends = ['is_compilation'];
+
+    public static function query(): AlbumBuilder
+    {
+        return parent::query();
+    }
+
+    public function newEloquentBuilder($query): AlbumBuilder
+    {
+        return new AlbumBuilder($query);
+    }
 
     /**
      * Get an album using some provided information.
      * If such is not found, a new album will be created using the information.
      */
-    public static function getOrCreate(Artist $artist, ?string $name = null, ?bool $isCompilation = false): self
+    public static function getOrCreate(Artist $artist, ?string $name = null): static
     {
-        // If this is a compilation album, its artist must be "Various Artists"
-        if ($isCompilation) {
-            $artist = Artist::getVariousArtist();
-        }
-
-        return static::firstOrCreate([
+        return static::query()->firstOrCreate([ // @phpstan-ignore-line
             'artist_id' => $artist->id,
             'name' => trim($name) ?: self::UNKNOWN_NAME,
         ]);
@@ -75,79 +83,73 @@ class Album extends Model
         return $this->hasMany(Song::class);
     }
 
-    public function getIsUnknownAttribute(): bool
+    protected function isUnknown(): Attribute
     {
-        return $this->id === self::UNKNOWN_ID;
+        return Attribute::get(fn (): bool => $this->id === self::UNKNOWN_ID);
     }
 
-    public function setCoverAttribute(?string $value): void
+    protected function cover(): Attribute
     {
-        $this->attributes['cover'] = $value ?: self::UNKNOWN_COVER;
+        return Attribute::get(static fn (?string $value): ?string => album_cover_url($value));
     }
 
-    public function getCoverAttribute(?string $value): string
+    protected function hasCover(): Attribute
     {
-        return album_cover_url($value ?: self::UNKNOWN_COVER);
+        return Attribute::get(
+            fn (): bool => $this->cover_path && (app()->runningUnitTests() || File::exists($this->cover_path))
+        )->shouldCache();
     }
 
-    public function getHasCoverAttribute(): bool
+    protected function coverPath(): Attribute
     {
-        $cover = array_get($this->attributes, 'cover');
+        return Attribute::get(function () {
+            $cover = Arr::get($this->attributes, 'cover');
 
-        if (!$cover) {
-            return false;
-        }
-
-        if ($cover === self::UNKNOWN_COVER) {
-            return false;
-        }
-
-        return file_exists(album_cover_path($cover));
-    }
-
-    public function getCoverPathAttribute(): ?string
-    {
-        $cover = array_get($this->attributes, 'cover');
-
-        return $cover ? album_cover_path($cover) : null;
+            return $cover ? album_cover_path($cover) : null;
+        })->shouldCache();
     }
 
     /**
      * Sometimes the tags extracted from getID3 are HTML entity encoded.
      * This makes sure they are always sane.
      */
-    public function getNameAttribute(string $value): string
+    protected function name(): Attribute
     {
-        return html_entity_decode($value);
+        return Attribute::get(static fn (string $value) => html_entity_decode($value))->shouldCache();
     }
 
-    public function getIsCompilationAttribute(): bool
+    protected function thumbnailName(): Attribute
     {
-        return $this->artist_id === Artist::VARIOUS_ID;
+        return Attribute::get(function (): ?string {
+            if (!$this->has_cover) {
+                return null;
+            }
+
+            $parts = pathinfo($this->cover_path);
+
+            return sprintf('%s_thumb.%s', $parts['filename'], $parts['extension']);
+        })->shouldCache();
     }
 
-    public function getThumbnailNameAttribute(): ?string
+    protected function thumbnailPath(): Attribute
     {
-        if (!$this->has_cover) {
-            return null;
-        }
-
-        $parts = pathinfo($this->cover_path);
-
-        return sprintf('%s_thumb.%s', $parts['filename'], $parts['extension']);
+        return Attribute::get(fn () => $this->thumbnail_name ? album_cover_path($this->thumbnail_name) : null)
+            ->shouldCache();
     }
 
-    public function getThumbnailPathAttribute(): ?string
+    protected function thumbnail(): Attribute
     {
-        return $this->thumbnail_name ? album_cover_path($this->thumbnail_name) : null;
+        return Attribute::get(fn () => $this->thumbnail_name ? album_cover_url($this->thumbnail_name) : null)
+            ->shouldCache();
     }
 
-    public function getThumbnailAttribute(): ?string
+    /** @deprecated Only here for backward compat with mobile apps */
+    protected function isCompilation(): Attribute
     {
-        return $this->thumbnail_name ? album_cover_url($this->thumbnail_name) : null;
+        return Attribute::get(fn () => $this->artist_id === Artist::VARIOUS_ID);
     }
 
-    /** @return array<mixed> */
+    /** @inheritdoc */
     public function toSearchableArray(): array
     {
         $array = [

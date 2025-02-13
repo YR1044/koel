@@ -2,167 +2,118 @@
 
 namespace App\Models;
 
-use App\Events\LibraryChanged;
+use App\Builders\SongBuilder;
+use App\Casts\Podcast\EpisodeMetadataCast;
+use App\Casts\SongLyricsCast;
+use App\Casts\SongStorageCast;
+use App\Casts\SongTitleCast;
+use App\Enums\PlayableType;
+use App\Enums\SongStorageType;
+use App\Models\Concerns\SupportsDeleteWhereValueNotIn;
+use App\Values\SongStorageMetadata\DropboxMetadata;
+use App\Values\SongStorageMetadata\LocalMetadata;
+use App\Values\SongStorageMetadata\S3CompatibleMetadata;
+use App\Values\SongStorageMetadata\S3LambdaMetadata;
+use App\Values\SongStorageMetadata\SftpMetadata;
+use App\Values\SongStorageMetadata\SongStorageMetadata;
+use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Casts\Attribute;
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Support\Collection;
 use Laravel\Scout\Searchable;
+use PhanAn\Poddle\Values\EpisodeMetadata;
+use Throwable;
 
 /**
  * @property string $path
  * @property string $title
- * @property Album $album
- * @property Artist $artist
+ * @property ?Album $album
+ * @property User $uploader
+ * @property ?Artist $artist
+ * @property ?Artist $album_artist
  * @property float $length
  * @property string $lyrics
  * @property int $track
  * @property int $disc
  * @property int $album_id
+ * @property int|null $year
+ * @property string $genre
  * @property string $id
  * @property int $artist_id
  * @property int $mtime
- * @property int $contributing_artist_id
+ * @property ?bool $liked Whether the song is liked by the current user (dynamically calculated)
+ * @property ?int $play_count The number of times the song has been played by the current user (dynamically calculated)
+ * @property Carbon $created_at
+ * @property int $owner_id
+ * @property bool $is_public
+ * @property User $owner
+ * @property-read SongStorageMetadata $storage_metadata
+ * @property SongStorageType $storage
  *
- * @method static self updateOrCreate(array $where, array $params)
- * @method static Builder select(string $string)
- * @method static Builder inDirectory(string $path)
- * @method static self first()
- * @method static Builder orderBy(...$args)
- * @method static int count()
- * @method static self|Collection|null find($id)
- * @method static Builder take(int $count)
+ * // The following are only available for collaborative playlists
+ * @property-read ?string $collaborator_email The email of the user who added the song to the playlist
+ * @property-read ?string $collaborator_name The name of the user who added the song to the playlist
+ * @property-read ?string $collaborator_avatar The avatar of the user who added the song to the playlist
+ * @property-read ?int $collaborator_id The ID of the user who added the song to the playlist
+ * @property-read ?string $added_at The date the song was added to the playlist
+ * @property-read PlayableType $type
+ *
+ * // Podcast episode properties
+ * @property ?EpisodeMetadata $episode_metadata
+ * @property ?string $episode_guid
+ * @property ?string $podcast_id
+ * @property ?Podcast $podcast
  */
 class Song extends Model
 {
     use HasFactory;
     use Searchable;
-    use SupportsDeleteWhereIDsNotIn;
-    use SupportsS3;
+    use SupportsDeleteWhereValueNotIn;
+    use HasUuids;
 
-    public $incrementing = false;
+    public const ID_REGEX = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+
     protected $guarded = [];
-
-    /**
-     * Attributes to be hidden from JSON outputs.
-     * Here we specify to hide lyrics as well to save some bandwidth (actually, lots of it).
-     * Lyrics can then be queried on demand.
-     */
-    protected $hidden = ['lyrics', 'updated_at', 'path', 'mtime'];
+    protected $hidden = ['updated_at', 'path', 'mtime'];
 
     protected $casts = [
+        'title' => SongTitleCast::class,
+        'lyrics' => SongLyricsCast::class,
         'length' => 'float',
         'mtime' => 'int',
         'track' => 'int',
         'disc' => 'int',
+        'is_public' => 'bool',
+        'storage' => SongStorageCast::class,
+        'episode_metadata' => EpisodeMetadataCast::class,
     ];
 
-    protected $keyType = 'string';
+    protected $with = ['album', 'artist', 'podcast'];
 
-    /**
-     * Update song info.
-     *
-     * @param array<string> $ids
-     * @param array<string> $data the data array, with these supported fields:
-     * - title
-     * - artistName
-     * - albumName
-     * - lyrics
-     * All of these are optional, in which case the info will not be changed
-     * (except for lyrics, which will be emptied)
-     *
-     * @return Collection|array<Song>
-     */
-    public static function updateInfo(array $ids, array $data): Collection
+    public static function query(?PlayableType $type = null, ?User $user = null): SongBuilder
     {
-        /*
-         * A collection of the updated songs.
-         *
-         * @var Collection
-         */
-        $updatedSongs = collect();
-
-        $ids = (array) $ids;
-        // If we're updating only one song, take into account the title, lyrics, and track number.
-        $single = count($ids) === 1;
-
-        foreach ($ids as $id) {
-            /** @var Song|null $song */
-            $song = self::with('album', 'album.artist')->find($id);
-
-            if (!$song) {
-                continue;
-            }
-
-            $updatedSongs->push($song->updateSingle(
-                $single ? trim($data['title']) : $song->title,
-                trim($data['albumName'] ?: $song->album->name),
-                trim($data['artistName']) ?: $song->artist->name,
-                $single ? trim($data['lyrics']) : $song->lyrics,
-                $single ? (int) $data['track'] : $song->track,
-                (int) $data['compilationState']
-            ));
-        }
-
-        // Our library may have been changed. Broadcast an event to tidy it up if need be.
-        if ($updatedSongs->count()) {
-            event(new LibraryChanged());
-        }
-
-        return $updatedSongs;
+        return parent::query()
+            ->when($type, static fn (Builder $query) => match ($type) { // @phpstan-ignore-line phpcs:ignore
+                PlayableType::SONG => $query->whereNull('songs.podcast_id'),
+                PlayableType::PODCAST_EPISODE => $query->whereNotNull('songs.podcast_id'),
+                default => $query,
+            })
+            ->when($user, static fn (SongBuilder $query) => $query->forUser($user)); // @phpstan-ignore-line
     }
 
-    public function updateSingle(
-        string $title,
-        string $albumName,
-        string $artistName,
-        string $lyrics,
-        int $track,
-        int $compilationState
-    ): self {
-        if ($artistName === Artist::VARIOUS_NAME) {
-            // If the artist name is "Various Artists", it's a compilation song no matter what.
-            $compilationState = 1;
-            // and since we can't determine the real contributing artist, it's "Unknown"
-            $artistName = Artist::UNKNOWN_NAME;
-        }
+    public function owner(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
 
-        $artist = Artist::getOrCreate($artistName);
-
-        switch ($compilationState) {
-            case 1: // ALL, or forcing compilation status to be Yes
-                $isCompilation = true;
-                break;
-
-            case 2: // Keep current compilation status
-                $isCompilation = $this->album->artist_id === Artist::VARIOUS_ID;
-                break;
-
-            default:
-                $isCompilation = false;
-                break;
-        }
-
-        $album = Album::getOrCreate($artist, $albumName, $isCompilation);
-
-        $this->artist_id = $artist->id;
-        $this->album_id = $album->id;
-        $this->title = $title;
-        $this->lyrics = $lyrics;
-        $this->track = $track;
-
-        $this->save();
-
-        // Clean up unnecessary data from the object
-        unset($this->album);
-        unset($this->artist);
-        // and make sure the lyrics is shown
-        $this->makeVisible('lyrics');
-
-        return $this;
+    public function newEloquentBuilder($query): SongBuilder
+    {
+        return new SongBuilder($query);
     }
 
     public function artist(): BelongsTo
@@ -175,6 +126,11 @@ class Song extends Model
         return $this->belongsTo(Album::class);
     }
 
+    public function podcast(): BelongsTo
+    {
+        return $this->belongsTo(Podcast::class);
+    }
+
     public function playlists(): BelongsToMany
     {
         return $this->belongsToMany(Playlist::class);
@@ -185,59 +141,91 @@ class Song extends Model
         return $this->hasMany(Interaction::class);
     }
 
-    /**
-     * Scope a query to only include songs in a given directory.
-     */
-    public function scopeInDirectory(Builder $query, string $path): Builder
+    protected function albumArtist(): Attribute
     {
-        // Make sure the path ends with a directory separator.
-        $path = rtrim(trim($path), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
-
-        return $query->where('path', 'LIKE', "$path%");
+        return Attribute::get(fn () => $this->album?->artist)->shouldCache();
     }
 
-    /**
-     * Sometimes the tags extracted from getID3 are HTML entity encoded.
-     * This makes sure they are always sane.
-     */
-    public function setTitleAttribute(string $value): void
+    protected function type(): Attribute
     {
-        $this->attributes['title'] = html_entity_decode($value);
+        return Attribute::get(fn () => $this->podcast_id ? PlayableType::PODCAST_EPISODE : PlayableType::SONG);
     }
 
-    /**
-     * Some songs don't have a title.
-     * Fall back to the file name (without extension) for such.
-     */
-    public function getTitleAttribute(?string $value): string
+    public function accessibleBy(User $user): bool
     {
-        return $value ?: pathinfo($this->path, PATHINFO_FILENAME);
+        if ($this->isEpisode()) {
+            return $user->subscribedToPodcast($this->podcast);
+        }
+
+        return $this->is_public || $this->ownedBy($user);
     }
 
-    /**
-     * Prepare the lyrics for displaying.
-     */
-    public function getLyricsAttribute(string $value): string
+    public function ownedBy(User $user): bool
     {
-        // We don't use nl2br() here, because the function actually preserves line breaks -
-        // it just _appends_ a "<br />" after each of them. This would cause our client
-        // implementation of br2nl to fail with duplicated line breaks.
-        return str_replace(["\r\n", "\r", "\n"], '<br />', $value);
+        // Do not use $song->owner->is($user) here, as it may trigger an extra query.
+        return $this->owner_id === $user->id;
     }
 
-    /** @return array<mixed> */
+    protected function storageMetadata(): Attribute
+    {
+        return (new Attribute(
+            get: function (): SongStorageMetadata {
+                try {
+                    switch ($this->storage) {
+                        case SongStorageType::SFTP:
+                            preg_match('/^sftp:\\/\\/(.*)/', $this->path, $matches);
+                            return SftpMetadata::make($matches[1]);
+
+                        case SongStorageType::S3:
+                            preg_match('/^s3:\\/\\/(.*)\\/(.*)/', $this->path, $matches);
+                            return S3CompatibleMetadata::make($matches[1], $matches[2]);
+
+                        case SongStorageType::S3_LAMBDA:
+                            preg_match('/^s3:\\/\\/(.*)\\/(.*)/', $this->path, $matches);
+                            return S3LambdaMetadata::make($matches[1], $matches[2]);
+
+                        case SongStorageType::DROPBOX:
+                            preg_match('/^dropbox:\\/\\/(.*)/', $this->path, $matches);
+                            return DropboxMetadata::make($matches[1]);
+
+                        default:
+                            return LocalMetadata::make($this->path);
+                    }
+                } catch (Throwable) {
+                    return LocalMetadata::make($this->path);
+                }
+            }
+        ))->shouldCache();
+    }
+
+    public static function getPathFromS3BucketAndKey(string $bucket, string $key): string
+    {
+        return "s3://$bucket/$key";
+    }
+
+    /** @inheritdoc */
     public function toSearchableArray(): array
     {
         $array = [
             'id' => $this->id,
             'title' => $this->title,
+            'type' => $this->type->value,
         ];
 
-        if (!$this->artist->is_unknown && !$this->artist->is_various) {
+        if ($this->episode_metadata?->description) {
+            $array['episode_description'] = $this->episode_metadata->description;
+        }
+
+        if ($this->artist && !$this->artist->is_unknown && !$this->artist->is_various) {
             $array['artist'] = $this->artist->name;
         }
 
         return $array;
+    }
+
+    public function isEpisode(): bool
+    {
+        return $this->type === PlayableType::PODCAST_EPISODE;
     }
 
     public function __toString(): string

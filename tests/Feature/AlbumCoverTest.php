@@ -2,15 +2,19 @@
 
 namespace Tests\Feature;
 
-use App\Events\LibraryChanged;
 use App\Models\Album;
-use App\Models\User;
 use App\Services\MediaMetadataService;
 use Mockery;
+use Mockery\MockInterface;
+use PHPUnit\Framework\Attributes\Test;
+use Tests\TestCase;
+
+use function Tests\create_admin;
+use function Tests\create_user;
 
 class AlbumCoverTest extends TestCase
 {
-    private $mediaMetadataService;
+    private MediaMetadataService|MockInterface $mediaMetadataService;
 
     public function setUp(): void
     {
@@ -19,39 +23,28 @@ class AlbumCoverTest extends TestCase
         $this->mediaMetadataService = self::mock(MediaMetadataService::class);
     }
 
-    public function testUpdate(): void
+    #[Test]
+    public function update(): void
     {
-        $this->expectsEvents(LibraryChanged::class);
-
-        /** @var Album $album */
-        $album = Album::factory()->create(['id' => 9999]);
-
-        $this->mediaMetadataService
-            ->shouldReceive('writeAlbumCover')
-            ->once()
-            ->with(Mockery::on(static function (Album $album): bool {
-                return $album->id === 9999;
-            }), 'Foo', 'jpeg');
-
-        $response = $this->putAsUser('api/album/' . $album->id . '/cover', [
-            'cover' => 'data:image/jpeg;base64,Rm9v',
-        ], User::factory()->admin()->create());
-
-        $response->assertStatus(200);
-    }
-
-    public function testUpdateNotAllowedForNormalUsers(): void
-    {
-        /** @var Album $album */
         $album = Album::factory()->create();
 
         $this->mediaMetadataService
             ->shouldReceive('writeAlbumCover')
-            ->never();
+            ->once()
+            ->with(Mockery::on(static fn (Album $target) => $target->is($album)), 'data:image/jpeg;base64,Rm9v');
 
-        $this->putAsUser('api/album/' . $album->id . '/cover', [
-            'cover' => 'data:image/jpeg;base64,Rm9v',
-        ], User::factory()->create())
-            ->assertStatus(403);
+        $this->putAs("api/album/{$album->id}/cover", ['cover' => 'data:image/jpeg;base64,Rm9v'], create_admin())
+            ->assertOk();
+    }
+
+    #[Test]
+    public function updateNotAllowedForNormalUsers(): void
+    {
+        $album = Album::factory()->create();
+
+        $this->mediaMetadataService->shouldNotReceive('writeAlbumCover');
+
+        $this->putAs("api/album/{$album->id}/cover", ['cover' => 'data:image/jpeg;base64,Rm9v'], create_user())
+            ->assertForbidden();
     }
 }

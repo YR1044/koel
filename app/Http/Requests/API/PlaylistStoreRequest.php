@@ -2,14 +2,17 @@
 
 namespace App\Http\Requests\API;
 
-use App\Models\Song;
+use App\Models\PlaylistFolder;
+use App\Rules\AllPlayablesAreAccessibleBy;
 use App\Rules\ValidSmartPlaylistRulePayload;
 use Illuminate\Validation\Rule;
 
 /**
  * @property array<string> $songs
- * @property string   $name
- * @property array    $rules
+ * @property-read string $name
+ * @property-read int|null $folder_id
+ * @property-read array $rules
+ * @property-read ?bool $own_songs_only
  */
 class PlaylistStoreRequest extends Request
 {
@@ -18,9 +21,10 @@ class PlaylistStoreRequest extends Request
     {
         return [
             'name' => 'required',
-            'songs' => 'array',
-            'songs.*' => [Rule::exists(Song::class, 'id')],
+            'songs' => ['array', new AllPlayablesAreAccessibleBy($this->user())],
             'rules' => ['array', 'nullable', new ValidSmartPlaylistRulePayload()],
+            'folder_id' => ['nullable', 'sometimes', Rule::exists(PlaylistFolder::class, 'id')],
+            'own_songs_only' => 'sometimes',
         ];
     }
 }
